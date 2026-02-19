@@ -1,0 +1,11 @@
+[package]
+name = "stellar-zk-cards"
+version = "0.1.0"
+edition = "2021"
+description = "Reusable ZK card game primitives for Stellar/Soroban"
+
+[dependencies]
+soroban-sdk = { workspace = true }
+
+[dev-dependencies]
+soroban-sdk = { workspace = true, features = ["testutils"] }

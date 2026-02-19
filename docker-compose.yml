@@ -1,0 +1,119 @@
+version: '3.8'
+
+services:
+  # Soroban local network (stellar quickstart)
+  soroban:
+    image: stellar/quickstart:latest
+    command: --local --enable-soroban-rpc
+    ports:
+      - "8000:8000"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+
+  # MPC Node 0
+  mpc-node-0:
+    build:
+      context: .
+      dockerfile: services/node/Dockerfile
+    environment:
+      NODE_ID: "0"
+      PORT: "8101"
+      MPC_PORT: "10000"
+      PARTY_CONFIG: "/app/config/party_0.toml"
+      CIRCUIT_DIR: "/app/circuits"
+      CRS_DIR: "/app/crs"
+    ports:
+      - "8101:8101"
+      - "10000:10000"
+    volumes:
+      - crs-data:/app/crs
+      - circuit-artifacts:/app/circuits
+      - ./services/node/config:/app/config:ro
+
+  # MPC Node 1
+  mpc-node-1:
+    build:
+      context: .
+      dockerfile: services/node/Dockerfile
+    environment:
+      NODE_ID: "1"
+      PORT: "8102"
+      MPC_PORT: "10001"
+      PARTY_CONFIG: "/app/config/party_1.toml"
+      CIRCUIT_DIR: "/app/circuits"
+      CRS_DIR: "/app/crs"
+    ports:
+      - "8102:8102"
+      - "10001:10001"
+    volumes:
+      - crs-data:/app/crs
+      - circuit-artifacts:/app/circuits
+      - ./services/node/config:/app/config:ro
+
+  # MPC Node 2
+  mpc-node-2:
+    build:
+      context: .
+      dockerfile: services/node/Dockerfile
+    environment:
+      NODE_ID: "2"
+      PORT: "8103"
+      MPC_PORT: "10002"
+      PARTY_CONFIG: "/app/config/party_2.toml"
+      CIRCUIT_DIR: "/app/circuits"
+      CRS_DIR: "/app/crs"
+    ports:
+      - "8103:8103"
+      - "10002:10002"
+    volumes:
+      - crs-data:/app/crs
+      - circuit-artifacts:/app/circuits
+      - ./services/node/config:/app/config:ro
+
+  # Coordinator (orchestrates MPC + serves API to web app)
+  coordinator:
+    build:
+      context: .
+      dockerfile: services/coordinator/Dockerfile
+    environment:
+      MPC_NODE_0: "http://mpc-node-0:8101"
+      MPC_NODE_1: "http://mpc-node-1:8102"
+      MPC_NODE_2: "http://mpc-node-2:8103"
+      SOROBAN_RPC: "http://soroban:8000/soroban/rpc"
+      CIRCUIT_DIR: "/app/circuits"
+      CRS_DIR: "/app/crs"
+      BIND_ADDR: "0.0.0.0:8080"
+    ports:
+      - "8080:8080"
+    volumes:
+      - crs-data:/app/crs
+      - circuit-artifacts:/app/circuits
+    depends_on:
+      soroban:
+        condition: service_healthy
+      mpc-node-0:
+        condition: service_started
+      mpc-node-1:
+        condition: service_started
+      mpc-node-2:
+        condition: service_started
+
+  # Web app
+  app:
+    build:
+      context: ./app
+      dockerfile: Dockerfile
+    environment:
+      NEXT_PUBLIC_SOROBAN_RPC: "http://localhost:8000/soroban/rpc"
+      NEXT_PUBLIC_COORDINATOR_URL: "http://localhost:8080"
+    ports:
+      - "3000:3000"
+    depends_on:
+      - coordinator
+
+volumes:
+  crs-data:
+  circuit-artifacts:

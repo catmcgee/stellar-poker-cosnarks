@@ -1,0 +1,13 @@
+# co-noir REP3 party configuration for Node 2 (local development)
+
+[party]
+id = 2
+bind = "0.0.0.0:10002"
+
+[[peers]]
+id = 0
+address = "127.0.0.1:10000"
+
+[[peers]]
+id = 1
+address = "127.0.0.1:10001"

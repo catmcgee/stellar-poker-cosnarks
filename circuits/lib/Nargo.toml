@@ -1,0 +1,5 @@
+[package]
+name = "stellar_poker_lib"
+type = "lib"
+authors = ["Stellar Poker"]
+compiler_version = ">=0.36.0"

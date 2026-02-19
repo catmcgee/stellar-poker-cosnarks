@@ -1,0 +1,8 @@
+[package]
+name = "showdown_valid"
+type = "bin"
+authors = ["Stellar Poker"]
+compiler_version = ">=0.36.0"
+
+[dependencies]
+stellar_poker_lib = { path = "../lib" }

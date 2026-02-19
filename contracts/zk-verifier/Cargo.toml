@@ -1,0 +1,14 @@
+[package]
+name = "zk-verifier"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+soroban-sdk = { workspace = true }
+ultrahonk_soroban_verifier = { path = "../../vendor/ultrahonk-rust-verifier/ultrahonk-soroban-verifier", default-features = false }
+
+[dev-dependencies]
+soroban-sdk = { workspace = true, features = ["testutils"] }
