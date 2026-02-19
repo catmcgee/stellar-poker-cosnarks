@@ -4,16 +4,22 @@ use crate::game_hub;
 use crate::types::*;
 
 /// Initialize state for a new hand.
-pub fn start_new_hand(env: &Env, table: &mut TableState) {
+pub fn start_new_hand(env: &Env, table: &mut TableState) -> Result<(), PokerTableError> {
     table.hand_number += 1;
 
     // Rotate dealer button
     let num_players = table.players.len() as u32;
+    if num_players < 2 {
+        return Err(PokerTableError::NeedAtLeastTwoPlayers);
+    }
     table.dealer_seat = (table.dealer_seat + 1) % num_players;
 
     // Reset player states
     for i in 0..table.players.len() {
-        let mut p = table.players.get(i).unwrap();
+        let mut p = table
+            .players
+            .get(i)
+            .ok_or(PokerTableError::InvalidPlayerIndex)?;
         p.folded = false;
         p.all_in = false;
         p.bet_this_round = 0;
@@ -24,8 +30,8 @@ pub fn start_new_hand(env: &Env, table: &mut TableState) {
     let sb_seat = (table.dealer_seat + 1) % num_players;
     let bb_seat = (table.dealer_seat + 2) % num_players;
 
-    post_blind(table, sb_seat, table.config.small_blind);
-    post_blind(table, bb_seat, table.config.big_blind);
+    post_blind(table, sb_seat, table.config.small_blind)?;
+    post_blind(table, bb_seat, table.config.big_blind)?;
 
     // Clear board state
     table.board_cards = Vec::new(env);
@@ -36,10 +42,14 @@ pub fn start_new_hand(env: &Env, table: &mut TableState) {
     // Transition to dealing phase (committee will shuffle + deal)
     table.phase = GamePhase::Dealing;
     table.last_action_ledger = env.ledger().sequence();
+    Ok(())
 }
 
-fn post_blind(table: &mut TableState, seat: u32, amount: i128) {
-    let mut player = table.players.get(seat).unwrap();
+fn post_blind(table: &mut TableState, seat: u32, amount: i128) -> Result<(), PokerTableError> {
+    let mut player = table
+        .players
+        .get(seat)
+        .ok_or(PokerTableError::InvalidPlayerIndex)?;
     let actual = if player.stack < amount {
         player.all_in = true;
         player.stack
@@ -51,15 +61,17 @@ fn post_blind(table: &mut TableState, seat: u32, amount: i128) {
     player.bet_this_round = actual;
     table.pot += actual;
     table.players.set(seat, player);
+    Ok(())
 }
 
 /// Count players still active (not folded).
 pub fn active_player_count(table: &TableState) -> u32 {
     let mut count = 0u32;
     for i in 0..table.players.len() {
-        let p = table.players.get(i).unwrap();
-        if !p.folded {
-            count += 1;
+        if let Some(p) = table.players.get(i) {
+            if !p.folded {
+                count += 1;
+            }
         }
     }
     count
@@ -71,9 +83,10 @@ pub fn last_player_standing(table: &TableState) -> Option<u32> {
         return None;
     }
     for i in 0..table.players.len() {
-        let p = table.players.get(i).unwrap();
-        if !p.folded {
-            return Some(p.seat_index);
+        if let Some(p) = table.players.get(i) {
+            if !p.folded {
+                return Some(p.seat_index);
+            }
         }
     }
     None
@@ -84,30 +97,37 @@ pub fn settle_showdown(
     env: &Env,
     table: &mut TableState,
     hole_cards: &Vec<(u32, u32)>,
-) {
+) -> Result<(), PokerTableError> {
     // Collect active players' hands
     let mut best_rank: u32 = 0;
     let mut winner_seat: u32 = 0;
 
     let board = &table.board_cards;
-    assert!(board.len() == 5, "board not complete");
+    if board.len() != 5 {
+        return Err(PokerTableError::BoardNotComplete);
+    }
 
     let board_arr: [u32; 5] = [
-        board.get(0).unwrap(),
-        board.get(1).unwrap(),
-        board.get(2).unwrap(),
-        board.get(3).unwrap(),
-        board.get(4).unwrap(),
+        board.get(0).ok_or(PokerTableError::BoardNotComplete)?,
+        board.get(1).ok_or(PokerTableError::BoardNotComplete)?,
+        board.get(2).ok_or(PokerTableError::BoardNotComplete)?,
+        board.get(3).ok_or(PokerTableError::BoardNotComplete)?,
+        board.get(4).ok_or(PokerTableError::BoardNotComplete)?,
     ];
 
     let mut active_idx = 0u32;
     for i in 0..table.players.len() {
-        let p = table.players.get(i).unwrap();
+        let p = table
+            .players
+            .get(i)
+            .ok_or(PokerTableError::InvalidPlayerIndex)?;
         if p.folded {
             continue;
         }
 
-        let (c1, c2) = hole_cards.get(active_idx).unwrap();
+        let (c1, c2) = hole_cards
+            .get(active_idx)
+            .ok_or(PokerTableError::InvalidHoleCards)?;
         let cards: [u32; 7] = [
             c1,
             c2,
@@ -129,7 +149,10 @@ pub fn settle_showdown(
 
     // Award pot to winner
     let winnings = table.pot;
-    let mut winner = table.players.get(winner_seat).unwrap();
+    let mut winner = table
+        .players
+        .get(winner_seat)
+        .ok_or(PokerTableError::InvalidPlayerIndex)?;
     winner.stack += winnings;
     table.players.set(winner_seat, winner.clone());
     table.pot = 0;
@@ -145,13 +168,17 @@ pub fn settle_showdown(
         (Symbol::new(env, "hand_settled"), table.id),
         (winner.address.clone(), winnings),
     );
+    Ok(())
 }
 
 /// Award pot to last player standing (all others folded).
-pub fn settle_fold_win(env: &Env, table: &mut TableState) {
+pub fn settle_fold_win(env: &Env, table: &mut TableState) -> Result<(), PokerTableError> {
     if let Some(winner_seat) = last_player_standing(table) {
         let winnings = table.pot;
-        let mut winner = table.players.get(winner_seat).unwrap();
+        let mut winner = table
+            .players
+            .get(winner_seat)
+            .ok_or(PokerTableError::InvalidPlayerIndex)?;
         winner.stack += winnings;
         table.players.set(winner_seat, winner.clone());
         table.pot = 0;
@@ -167,4 +194,5 @@ pub fn settle_fold_win(env: &Env, table: &mut TableState) {
             (winner.address.clone(), winnings),
         );
     }
+    Ok(())
 }

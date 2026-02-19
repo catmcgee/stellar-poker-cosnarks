@@ -1,7 +1,11 @@
-use soroban_sdk::{contract, contractclient, contractimpl, Bytes, BytesN, Env, Vec};
+use soroban_sdk::{contractclient, Bytes, BytesN, Env, Vec};
+
+#[cfg(test)]
+use soroban_sdk::{contract, contractimpl};
 
 /// ZK Verifier contract interface.
 /// Matches the interface in contracts/zk-verifier/src/lib.rs
+#[cfg(test)]
 #[contract]
 #[allow(dead_code)]
 pub struct ZkVerifierContract;
@@ -38,6 +42,7 @@ pub trait ZkVerifier {
 
 /// Mock implementation for tests. In production, the real zk-verifier
 /// contract is deployed separately and called cross-contract.
+#[cfg(test)]
 #[contractimpl]
 #[allow(dead_code)]
 impl ZkVerifierContract {

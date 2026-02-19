@@ -18,7 +18,6 @@ use axum::{
     routing::{get, post},
     Router,
 };
-use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
@@ -36,6 +35,8 @@ struct AppState {
     tables: Arc<RwLock<HashMap<u32, TableSession>>>,
     mpc_config: MpcConfig,
     soroban_config: soroban::SorobanConfig,
+    auth_state: Arc<RwLock<AuthState>>,
+    rate_limit_state: Arc<RwLock<RateLimitState>>,
 }
 
 #[derive(Clone)]
@@ -51,25 +52,67 @@ struct MpcConfig {
     committee_secret: String,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug)]
+struct PlayerPrivateCards {
+    card1: u32,
+    card2: u32,
+    salt1: String,
+    salt2: String,
+}
+
+#[derive(Clone, Debug)]
+struct PreparedReveal {
+    cards: Vec<u32>,
+    indices: Vec<u32>,
+    proof: Vec<u8>,
+    public_inputs: Vec<u8>,
+    session_id: String,
+    submitted_tx_hash: Option<String>,
+}
+
+#[derive(Clone, Debug)]
+struct PreparedShowdown {
+    winner: String,
+    winner_index: u32,
+    hole_cards: Vec<(u32, u32)>,
+    proof: Vec<u8>,
+    public_inputs: Vec<u8>,
+    session_id: String,
+    submitted_tx_hash: Option<String>,
+}
+
+#[derive(Clone, Debug)]
+#[allow(dead_code)]
 struct TableSession {
     table_id: u32,
-    /// The shuffled deck (only assembled during MPC, then split into shares)
-    /// In production, this is NEVER stored in plaintext on the coordinator.
-    /// It exists only as secret shares across the 3 MPC nodes.
-    deck_order: Option<Vec<u32>>,
-    /// Per-card salts for commitments
-    card_salts: Option<Vec<String>>,
+    /// Public commitments posted with the deck root.
+    deck_commitments: Vec<String>,
     /// Deck Merkle root (public, posted on-chain)
-    deck_root: Option<String>,
-    /// Player hole card assignments (indices into deck)
-    player_cards: HashMap<String, (u32, u32)>,
+    deck_root: String,
+    /// Private player hole cards + salts keyed by player address.
+    player_cards: HashMap<String, PlayerPrivateCards>,
+    /// Players in deterministic seat order.
+    player_order: Vec<String>,
     /// Cards already dealt (indices)
     dealt_indices: Vec<u32>,
     /// Board card indices
     board_indices: Vec<u32>,
+    /// Pre-generated reveal proofs and payloads by phase.
+    reveal_plans: HashMap<String, PreparedReveal>,
+    /// Pre-generated showdown proof and payload.
+    showdown_plan: PreparedShowdown,
     /// Current game phase
     phase: String,
+}
+
+#[derive(Clone, Debug, Default)]
+struct AuthState {
+    last_nonce_by_address: HashMap<String, u64>,
+}
+
+#[derive(Clone, Debug, Default)]
+struct RateLimitState {
+    requests_by_bucket: HashMap<String, Vec<u64>>,
 }
 
 #[tokio::main]
@@ -82,8 +125,7 @@ async fn main() {
             std::env::var("MPC_NODE_1").unwrap_or_else(|_| "http://localhost:8102".to_string()),
             std::env::var("MPC_NODE_2").unwrap_or_else(|_| "http://localhost:8103".to_string()),
         ],
-        circuit_dir: std::env::var("CIRCUIT_DIR")
-            .unwrap_or_else(|_| "./circuits".to_string()),
+        circuit_dir: std::env::var("CIRCUIT_DIR").unwrap_or_else(|_| "./circuits".to_string()),
         soroban_rpc: std::env::var("SOROBAN_RPC")
             .unwrap_or_else(|_| "http://localhost:8000/soroban/rpc".to_string()),
         committee_secret: std::env::var("COMMITTEE_SECRET")
@@ -92,7 +134,10 @@ async fn main() {
 
     let soroban_config = soroban::SorobanConfig::from_env();
     if soroban_config.is_configured() {
-        tracing::info!("Soroban configured: contract={}", soroban_config.poker_table_contract);
+        tracing::info!(
+            "Soroban configured: contract={}",
+            soroban_config.poker_table_contract
+        );
     } else {
         tracing::warn!("Soroban not configured — on-chain submission disabled");
     }
@@ -101,11 +146,16 @@ async fn main() {
         tables: Arc::new(RwLock::new(HashMap::new())),
         mpc_config,
         soroban_config,
+        auth_state: Arc::new(RwLock::new(AuthState::default())),
+        rate_limit_state: Arc::new(RwLock::new(RateLimitState::default())),
     };
 
     let app = Router::new()
         .route("/api/health", get(health))
-        .route("/api/table/{table_id}/request-deal", post(api::request_deal))
+        .route(
+            "/api/table/{table_id}/request-deal",
+            post(api::request_deal),
+        )
         .route(
             "/api/table/{table_id}/request-reveal/{phase}",
             post(api::request_reveal),
@@ -118,10 +168,7 @@ async fn main() {
             "/api/table/{table_id}/player/{address}/cards",
             get(api::get_player_cards),
         )
-        .route(
-            "/api/table/{table_id}/state",
-            get(api::get_table_state),
-        )
+        .route("/api/table/{table_id}/state", get(api::get_table_state))
         .route("/api/committee/status", get(api::committee_status))
         .layer(CorsLayer::permissive())
         .with_state(state);

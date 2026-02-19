@@ -4,83 +4,155 @@ import { useState, useEffect, useCallback } from "react";
 import { Board } from "./Board";
 import { PlayerSeat } from "./PlayerSeat";
 import { ActionPanel } from "./ActionPanel";
-import type { GameState, Player } from "@/lib/game-state";
+import type { GameState } from "@/lib/game-state";
 import { createInitialState } from "@/lib/game-state";
 import * as api from "@/lib/api";
+import { connectFreighterWallet, type WalletSession } from "@/lib/freighter";
 
 interface TableProps {
   tableId: number;
 }
 
+function isStellarAddress(address: string): boolean {
+  return /^G[A-Z2-7]{55}$/.test(address.trim());
+}
+
+function shortAddress(address: string): string {
+  return `${address.slice(0, 6)}...${address.slice(-6)}`;
+}
+
 export function Table({ tableId }: TableProps) {
-  const [game, setGame] = useState<GameState>(() =>
-    createInitialState(tableId)
-  );
-  const [userAddress] = useState("player_0");
+  const [game, setGame] = useState<GameState>(() => createInitialState(tableId));
+  const [wallet, setWallet] = useState<WalletSession | null>(null);
+  const [opponentAddress, setOpponentAddress] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  const [connectingWallet, setConnectingWallet] = useState(false);
 
-  const userPlayer = game.players.find((p) => p.address === userAddress);
-  const isMyTurn = game.players[game.currentTurn]?.address === userAddress;
+  const userAddress = wallet?.address;
+  const userPlayer = userAddress
+    ? game.players.find((p) => p.address === userAddress)
+    : undefined;
+  const isMyTurn = !!userAddress && game.players[game.currentTurn]?.address === userAddress;
 
-  const handleDeal = useCallback(async () => {
-    setLoading(true);
+  const handleConnectWallet = useCallback(async () => {
+    setConnectingWallet(true);
     setError(null);
     try {
-      const result = await api.requestDeal(tableId);
-
-      // Fetch our private cards
-      const cards = await api.getPlayerCards(tableId, "0");
-
-      setGame((prev) => ({
-        ...prev,
-        phase: "preflop",
-        boardCards: [],
-        pot: 200, // Small + big blind
-        handNumber: prev.handNumber + 1,
-        lastTxHash: result.tx_hash ?? undefined,
-        proofSize: result.proof_size,
-        onChainConfirmed: !!result.tx_hash,
-        players: prev.players.map((p) => {
-          if (p.address === userAddress) {
-            return { ...p, cards: [cards.card1, cards.card2] as [number, number], folded: false, betThisRound: 0 };
-          }
-          return { ...p, folded: false, betThisRound: 0, cards: undefined };
-        }),
-      }));
+      const connected = await connectFreighterWallet();
+      setWallet(connected);
+      if (!opponentAddress && game.players.length >= 2) {
+        const existingOpponent = game.players.find(
+          (p) => p.address !== connected.address
+        );
+        if (existingOpponent) {
+          setOpponentAddress(existingOpponent.address);
+        }
+      }
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Deal failed");
+      setError(e instanceof Error ? e.message : "Failed to connect wallet");
     } finally {
-      setLoading(false);
+      setConnectingWallet(false);
     }
-  }, [tableId, userAddress]);
+  }, [game.players, opponentAddress]);
+
+  const resolvePlayersForDeal = useCallback((): string[] | null => {
+    if (!wallet) {
+      setError("Connect Freighter wallet before starting a hand");
+      return null;
+    }
+
+    const existingOpponent = game.players.find((p) => p.address !== wallet.address)?.address;
+    const opponent = (existingOpponent ?? opponentAddress).trim();
+
+    if (!isStellarAddress(wallet.address)) {
+      setError("Connected wallet address is invalid");
+      return null;
+    }
+    if (!isStellarAddress(opponent)) {
+      setError("Enter a valid opponent Stellar address");
+      return null;
+    }
+    if (opponent === wallet.address) {
+      setError("Opponent address must be different from your wallet");
+      return null;
+    }
+
+    return [wallet.address, opponent];
+  }, [wallet, game.players, opponentAddress]);
+
+  const handleDeal = useCallback(
+    async (players: string[]) => {
+      if (!wallet) {
+        setError("Connect Freighter wallet before dealing");
+        return;
+      }
+
+      setLoading(true);
+      setError(null);
+      try {
+        const result = await api.requestDeal(tableId, players, wallet);
+
+        // Fetch authenticated player's private cards.
+        const cards = await api.getPlayerCards(tableId, wallet.address, wallet);
+
+        setGame((prev) => ({
+          ...prev,
+          phase: "preflop",
+          boardCards: [],
+          pot: 200,
+          handNumber: prev.handNumber + 1,
+          lastTxHash: result.tx_hash ?? undefined,
+          proofSize: result.proof_size,
+          onChainConfirmed: !!result.tx_hash,
+          players: players.map((address, seat) => ({
+            address,
+            seat,
+            stack: 10000,
+            betThisRound: 0,
+            folded: false,
+            allIn: false,
+            cards:
+              address === wallet.address
+                ? ([cards.card1, cards.card2] as [number, number])
+                : undefined,
+          })),
+        }));
+      } catch (e) {
+        setError(e instanceof Error ? e.message : "Deal failed");
+      } finally {
+        setLoading(false);
+      }
+    },
+    [tableId, wallet]
+  );
 
   const handleAction = useCallback(
     async (action: string, amount?: number) => {
       if (action === "start") {
-        // Initialize players for demo
+        const players = resolvePlayersForDeal();
+        if (!players) {
+          return;
+        }
+
         setGame((prev) => ({
           ...prev,
-          players: [
-            {
-              address: "player_0",
-              seat: 0,
-              stack: 10000,
-              betThisRound: 0,
-              folded: false,
-              allIn: false,
-            },
-            {
-              address: "player_1",
-              seat: 1,
-              stack: 10000,
-              betThisRound: 0,
-              folded: false,
-              allIn: false,
-            },
-          ],
+          players: players.map((address, seat) => ({
+            address,
+            seat,
+            stack: 10000,
+            betThisRound: 0,
+            folded: false,
+            allIn: false,
+          })),
         }));
-        await handleDeal();
+
+        await handleDeal(players);
+        return;
+      }
+
+      if (!userAddress) {
+        setError("Connect Freighter wallet to act");
         return;
       }
 
@@ -124,21 +196,26 @@ export function Table({ tableId }: TableProps) {
         }
       });
     },
-    [userAddress, handleDeal]
+    [resolvePlayersForDeal, handleDeal, userAddress]
   );
 
-  // Reveal board cards when phase transitions
+  // Reveal board cards when phase transitions.
   useEffect(() => {
     if (game.phase === "preflop" && game.boardCards.length === 0) {
-      // Auto-reveal flop after preflop betting (demo: after a short delay)
+      // Auto-reveal could be driven here in a fully automated flow.
     }
   }, [game.phase, game.boardCards.length]);
 
   const handleReveal = useCallback(
     async (phase: "flop" | "turn" | "river") => {
+      if (!wallet) {
+        setError("Connect Freighter wallet before requesting reveal");
+        return;
+      }
+
       setLoading(true);
       try {
-        const result = await api.requestReveal(tableId, phase);
+        const result = await api.requestReveal(tableId, phase, wallet);
         setGame((prev) => ({
           ...prev,
           phase,
@@ -153,13 +230,18 @@ export function Table({ tableId }: TableProps) {
         setLoading(false);
       }
     },
-    [tableId]
+    [tableId, wallet]
   );
 
   const handleShowdown = useCallback(async () => {
+    if (!wallet) {
+      setError("Connect Freighter wallet before requesting showdown");
+      return;
+    }
+
     setLoading(true);
     try {
-      const result = await api.requestShowdown(tableId);
+      const result = await api.requestShowdown(tableId, wallet);
       setGame((prev) => ({
         ...prev,
         phase: "settlement",
@@ -172,48 +254,68 @@ export function Table({ tableId }: TableProps) {
     } finally {
       setLoading(false);
     }
-  }, [tableId]);
+  }, [tableId, wallet]);
 
   const currentBet = Math.max(...game.players.map((p) => p.betThisRound), 0);
 
   return (
     <div className="flex flex-col items-center gap-6 min-h-screen bg-gray-900 p-4">
       {/* Header */}
-      <div className="flex items-center justify-between w-full max-w-3xl">
-        <h1 className="text-xl font-bold text-white">
-          Stellar Poker - Table #{tableId}
-        </h1>
-        <div className="flex items-center gap-2">
-          <div className="text-sm text-gray-400">
-            Hand #{game.handNumber} | Phase: {game.phase}
-          </div>
+      <div className="flex items-center justify-between w-full max-w-3xl gap-4">
+        <h1 className="text-xl font-bold text-white">Stellar Poker - Table #{tableId}</h1>
+        <div className="flex items-center gap-3">
+          <div className="text-sm text-gray-400">Hand #{game.handNumber} | Phase: {game.phase}</div>
+          {wallet ? (
+            <div className="text-xs bg-gray-800 text-green-300 px-3 py-1 rounded border border-gray-700">
+              {shortAddress(wallet.address)}
+            </div>
+          ) : (
+            <button
+              onClick={handleConnectWallet}
+              disabled={connectingWallet}
+              className="text-xs bg-blue-700 hover:bg-blue-600 disabled:bg-blue-900 text-white px-3 py-1 rounded"
+            >
+              {connectingWallet ? "Connecting..." : "Connect Freighter"}
+            </button>
+          )}
           {loading && (
             <div className="w-4 h-4 border-2 border-yellow-400 border-t-transparent rounded-full animate-spin" />
           )}
         </div>
       </div>
 
-      {error && (
-        <div className="bg-red-900/50 text-red-300 px-4 py-2 rounded-lg text-sm">
-          {error}
-        </div>
-      )}
+      <div className="w-full max-w-3xl flex items-center gap-2">
+        <input
+          value={opponentAddress}
+          onChange={(e) => setOpponentAddress(e.target.value.trim())}
+          placeholder="Opponent Stellar address (G...)"
+          className="flex-1 bg-gray-800 border border-gray-700 text-gray-100 text-sm px-3 py-2 rounded"
+        />
+        <button
+          onClick={handleConnectWallet}
+          disabled={connectingWallet}
+          className="text-xs bg-gray-700 hover:bg-gray-600 disabled:bg-gray-800 text-gray-200 px-3 py-2 rounded"
+        >
+          {wallet ? "Reconnect" : "Wallet"}
+        </button>
+      </div>
+
+      {error && <div className="bg-red-900/50 text-red-300 px-4 py-2 rounded-lg text-sm">{error}</div>}
 
       {/* Table felt */}
-      <div className="relative w-full max-w-3xl aspect-[16/10] bg-gradient-to-b from-green-900 to-green-800 rounded-[60px] border-8 border-brown-800 shadow-2xl flex flex-col items-center justify-center gap-4"
+      <div
+        className="relative w-full max-w-3xl aspect-[16/10] bg-gradient-to-b from-green-900 to-green-800 rounded-[60px] border-8 border-brown-800 shadow-2xl flex flex-col items-center justify-center gap-4"
         style={{ borderColor: "#5D4037" }}
       >
         {/* Opponent seats (top) */}
         <div className="flex gap-8 -mt-16">
           {game.players
-            .filter((p) => p.address !== userAddress)
+            .filter((p) => !userAddress || p.address !== userAddress)
             .map((player) => (
               <PlayerSeat
                 key={player.address}
                 player={player}
-                isCurrentTurn={
-                  game.players[game.currentTurn]?.address === player.address
-                }
+                isCurrentTurn={game.players[game.currentTurn]?.address === player.address}
                 isDealer={player.seat === game.dealerSeat}
                 isUser={false}
               />

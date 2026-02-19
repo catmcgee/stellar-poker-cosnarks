@@ -198,7 +198,7 @@ mod test {
     }
 
     #[test]
-    #[should_panic(expected = "invalid buy-in")]
+    #[should_panic(expected = "Error(Contract, #4)")]
     fn test_join_table_buy_in_too_low() {
         let s = setup();
         let table_id = create_default_table(&s);
@@ -207,7 +207,7 @@ mod test {
     }
 
     #[test]
-    #[should_panic(expected = "invalid buy-in")]
+    #[should_panic(expected = "Error(Contract, #4)")]
     fn test_join_table_buy_in_too_high() {
         let s = setup();
         let table_id = create_default_table(&s);
@@ -216,7 +216,7 @@ mod test {
     }
 
     #[test]
-    #[should_panic(expected = "already seated")]
+    #[should_panic(expected = "Error(Contract, #5)")]
     fn test_join_table_already_seated() {
         let s = setup();
         let table_id = create_default_table(&s);
@@ -251,7 +251,7 @@ mod test {
         // for 2 players: dealer_seat = (0+1)%2 = 1, sb = (1+1)%2 = 0, bb = (1+2)%2 = 1)
         let sb_player = table.players.get(0).unwrap();
         let bb_player = table.players.get(1).unwrap();
-        assert_eq!(sb_player.bet_this_round, 5);  // small blind
+        assert_eq!(sb_player.bet_this_round, 5); // small blind
         assert_eq!(sb_player.stack, 495);
         assert_eq!(bb_player.bet_this_round, 10); // big blind
         assert_eq!(bb_player.stack, 490);
@@ -259,7 +259,7 @@ mod test {
     }
 
     #[test]
-    #[should_panic(expected = "need at least 2 players")]
+    #[should_panic(expected = "Error(Contract, #9)")]
     fn test_start_hand_not_enough_players() {
         let s = setup();
         let table_id = create_default_table(&s);
@@ -408,11 +408,8 @@ mod test {
         let pot_before = table.pot;
         let bet_amount: i128 = 20;
 
-        s.client.player_action(
-            &table_id,
-            &acting.address,
-            &Action::Bet(bet_amount),
-        );
+        s.client
+            .player_action(&table_id, &acting.address, &Action::Bet(bet_amount));
 
         let table = s.client.get_table(&table_id);
         let player_after = table.players.get(current).unwrap();
@@ -513,11 +510,8 @@ mod test {
         let raiser = table.players.get(current).unwrap();
 
         // Player raises by 20 on top of calling the big blind
-        s.client.player_action(
-            &table_id,
-            &raiser.address,
-            &Action::Raise(20),
-        );
+        s.client
+            .player_action(&table_id, &raiser.address, &Action::Raise(20));
 
         // Other player calls the raise
         let table = s.client.get_table(&table_id);
@@ -624,7 +618,7 @@ mod test {
     }
 
     #[test]
-    #[should_panic(expected = "cannot leave during active hand")]
+    #[should_panic(expected = "Error(Contract, #7)")]
     fn test_cannot_leave_during_active_hand() {
         let s = setup();
         let table_id = create_default_table(&s);
@@ -642,7 +636,7 @@ mod test {
     }
 
     #[test]
-    #[should_panic(expected = "player not at table")]
+    #[should_panic(expected = "Error(Contract, #6)")]
     fn test_leave_table_not_seated() {
         let s = setup();
         let table_id = create_default_table(&s);
@@ -682,14 +676,8 @@ mod test {
         let indices: Vec<u32> = Vec::from_array(&s.env, [4, 5, 6]);
         let proof = soroban_sdk::Bytes::new(&s.env);
         let pub_in = soroban_sdk::Bytes::new(&s.env);
-        s.client.reveal_board(
-            &table_id,
-            &s.committee,
-            &cards,
-            &indices,
-            &proof,
-            &pub_in,
-        );
+        s.client
+            .reveal_board(&table_id, &s.committee, &cards, &indices, &proof, &pub_in);
 
         let table = s.client.get_table(&table_id);
         assert_eq!(table.phase, GamePhase::Flop);

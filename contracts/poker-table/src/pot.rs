@@ -6,19 +6,25 @@ use crate::types::*;
 /// This is simplified for v1 — handles the common case of one main pot
 /// and one side pot.
 #[allow(dead_code)]
-pub fn calculate_side_pots(env: &Env, table: &TableState) -> Vec<SidePot> {
+pub fn calculate_side_pots(env: &Env, table: &TableState) -> Result<Vec<SidePot>, PokerTableError> {
     let mut pots: Vec<SidePot> = Vec::new(env);
 
     // Collect all-in amounts and sort
     let mut all_in_levels: Vec<i128> = Vec::new(env);
     for i in 0..table.players.len() {
-        let p = table.players.get(i).unwrap();
+        let p = table
+            .players
+            .get(i)
+            .ok_or(PokerTableError::InvalidPlayerIndex)?;
         if p.all_in && p.bet_this_round > 0 {
             // Insert sorted
             let mut inserted = false;
             for j in 0..all_in_levels.len() {
-                if p.bet_this_round <= all_in_levels.get(j).unwrap() {
-                    if p.bet_this_round < all_in_levels.get(j).unwrap() {
+                let level = all_in_levels
+                    .get(j)
+                    .ok_or(PokerTableError::InvalidPlayerIndex)?;
+                if p.bet_this_round <= level {
+                    if p.bet_this_round < level {
                         all_in_levels.insert(j, p.bet_this_round);
                     }
                     inserted = true;
@@ -35,7 +41,10 @@ pub fn calculate_side_pots(env: &Env, table: &TableState) -> Vec<SidePot> {
         // No side pots needed — single main pot
         let mut eligible = Vec::new(env);
         for i in 0..table.players.len() {
-            let p = table.players.get(i).unwrap();
+            let p = table
+                .players
+                .get(i)
+                .ok_or(PokerTableError::InvalidPlayerIndex)?;
             if !p.folded {
                 eligible.push_back(p.seat_index);
             }
@@ -44,23 +53,29 @@ pub fn calculate_side_pots(env: &Env, table: &TableState) -> Vec<SidePot> {
             amount: table.pot,
             eligible_players: eligible,
         });
-        return pots;
+        return Ok(pots);
     }
 
     // Build pots at each all-in level
     let mut prev_level: i128 = 0;
     for lvl_idx in 0..all_in_levels.len() {
-        let level = all_in_levels.get(lvl_idx).unwrap();
+        let level = all_in_levels
+            .get(lvl_idx)
+            .ok_or(PokerTableError::InvalidPlayerIndex)?;
         let _increment = level - prev_level;
         let mut pot_amount: i128 = 0;
         let mut eligible = Vec::new(env);
 
         for i in 0..table.players.len() {
-            let p = table.players.get(i).unwrap();
+            let p = table
+                .players
+                .get(i)
+                .ok_or(PokerTableError::InvalidPlayerIndex)?;
             if p.folded {
                 continue;
             }
-            let contributed = core::cmp::min(p.bet_this_round, level) - core::cmp::min(p.bet_this_round, prev_level);
+            let contributed = core::cmp::min(p.bet_this_round, level)
+                - core::cmp::min(p.bet_this_round, prev_level);
             pot_amount += contributed;
             if p.bet_this_round >= level {
                 eligible.push_back(p.seat_index);
@@ -77,11 +92,16 @@ pub fn calculate_side_pots(env: &Env, table: &TableState) -> Vec<SidePot> {
     }
 
     // Remaining pot for players who bet more than highest all-in
-    let max_level = all_in_levels.get(all_in_levels.len() - 1).unwrap();
+    let max_level = all_in_levels
+        .get(all_in_levels.len() - 1)
+        .ok_or(PokerTableError::InvalidPlayerIndex)?;
     let mut remaining: i128 = 0;
     let mut eligible = Vec::new(env);
     for i in 0..table.players.len() {
-        let p = table.players.get(i).unwrap();
+        let p = table
+            .players
+            .get(i)
+            .ok_or(PokerTableError::InvalidPlayerIndex)?;
         if p.folded {
             continue;
         }
@@ -97,5 +117,5 @@ pub fn calculate_side_pots(env: &Env, table: &TableState) -> Vec<SidePot> {
         });
     }
 
-    pots
+    Ok(pots)
 }
