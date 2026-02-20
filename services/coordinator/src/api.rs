@@ -19,7 +19,7 @@ const MIN_PLAYERS: usize = 2;
 const AUTH_SKEW_SECS: i64 = 300;
 const RATE_LIMIT_WINDOW_SECS: u64 = 60;
 const RATE_LIMIT_MAX_REQUESTS: usize = 60;
-const PROOF_BYTES: usize = 14_592;
+// Proof size varies by circuit and transcript hasher — not hardcoded.
 
 #[derive(Deserialize)]
 pub struct DealRequest {
@@ -141,15 +141,6 @@ pub async fn request_deal(
         },
     )?;
 
-    if deal_proof.proof.len() != PROOF_BYTES {
-        tracing::error!(
-            "Deal proof size mismatch: got {} bytes, expected {}",
-            deal_proof.proof.len(),
-            PROOF_BYTES
-        );
-        return Err(StatusCode::BAD_GATEWAY);
-    }
-
     let tx_hash = soroban::submit_deal_proof(
         &state.soroban_config,
         table_id,
@@ -249,7 +240,7 @@ pub async fn request_reveal(
         return Ok(Json(RevealResponse {
             status: "revealed".to_string(),
             cards,
-            proof_size: PROOF_BYTES,
+            proof_size: 0,
             session_id,
             tx_hash: Some(existing_hash.clone()),
         }));
@@ -295,15 +286,6 @@ pub async fn request_reveal(
             tracing::error!("Reveal public input parsing failed: {}", e);
             StatusCode::BAD_GATEWAY
         })?;
-
-    if reveal_proof.proof.len() != PROOF_BYTES {
-        tracing::error!(
-            "Reveal proof size mismatch: got {} bytes, expected {}",
-            reveal_proof.proof.len(),
-            PROOF_BYTES
-        );
-        return Err(StatusCode::BAD_GATEWAY);
-    }
 
     let tx_hash = soroban::submit_reveal_proof(
         &state.soroban_config,
@@ -380,7 +362,7 @@ pub async fn request_showdown(
                 status: "showdown_complete".to_string(),
                 winner: winner.clone(),
                 winner_index: *winner_index,
-                proof_size: PROOF_BYTES,
+                proof_size: 0,
                 session_id: session.showdown_session_id.clone().unwrap_or_default(),
                 tx_hash: session.showdown_tx_hash.clone(),
             }));
@@ -440,15 +422,6 @@ pub async fn request_showdown(
         return Err(StatusCode::BAD_GATEWAY);
     }
     let winner = session.player_order[parsed_showdown.winner_index as usize].clone();
-
-    if showdown_proof.proof.len() != PROOF_BYTES {
-        tracing::error!(
-            "Showdown proof size mismatch: got {} bytes, expected {}",
-            showdown_proof.proof.len(),
-            PROOF_BYTES
-        );
-        return Err(StatusCode::BAD_GATEWAY);
-    }
 
     let tx_hash = soroban::submit_showdown_proof(
         &state.soroban_config,

@@ -9,7 +9,7 @@ import requests
 from nacl.signing import SigningKey
 
 BASE = "http://localhost:8080"
-TABLE_ID = 1
+TABLE_ID = 2
 
 # --- Stellar key helpers ---
 
@@ -81,7 +81,7 @@ print(f"  {r.status_code}: {r.json()}")
 print("\n=== Request Deal (table 1, 2 players) ===")
 headers = make_auth_headers(sk1, addr1, TABLE_ID, "request_deal", next_nonce(addr1))
 payload = {"players": [addr1, addr2]}
-r = requests.post(f"{BASE}/api/table/{TABLE_ID}/request-deal", json=payload, headers=headers, timeout=120)
+r = requests.post(f"{BASE}/api/table/{TABLE_ID}/request-deal", json=payload, headers=headers, timeout=600)
 print(f"  Status: {r.status_code}")
 print(f"  Headers: {dict(r.headers)}")
 print(f"  Body: {r.text[:2000]}")
@@ -95,7 +95,7 @@ else:
 # --- Step 3: Request Reveal Flop ---
 print("\n=== Request Reveal: Flop ===")
 headers = make_auth_headers(sk1, addr1, TABLE_ID, "request_reveal:flop", next_nonce(addr1))
-r = requests.post(f"{BASE}/api/table/{TABLE_ID}/request-reveal/flop", headers=headers, timeout=120)
+r = requests.post(f"{BASE}/api/table/{TABLE_ID}/request-reveal/flop", headers=headers, timeout=600)
 print(f"  Status: {r.status_code}")
 if r.status_code == 200:
     flop = r.json()
@@ -108,7 +108,7 @@ else:
 # --- Step 4: Request Reveal Turn ---
 print("\n=== Request Reveal: Turn ===")
 headers = make_auth_headers(sk1, addr1, TABLE_ID, "request_reveal:turn", next_nonce(addr1))
-r = requests.post(f"{BASE}/api/table/{TABLE_ID}/request-reveal/turn", headers=headers, timeout=120)
+r = requests.post(f"{BASE}/api/table/{TABLE_ID}/request-reveal/turn", headers=headers, timeout=600)
 print(f"  Status: {r.status_code}")
 if r.status_code == 200:
     turn = r.json()
@@ -121,7 +121,7 @@ else:
 # --- Step 5: Request Reveal River ---
 print("\n=== Request Reveal: River ===")
 headers = make_auth_headers(sk1, addr1, TABLE_ID, "request_reveal:river", next_nonce(addr1))
-r = requests.post(f"{BASE}/api/table/{TABLE_ID}/request-reveal/river", headers=headers, timeout=120)
+r = requests.post(f"{BASE}/api/table/{TABLE_ID}/request-reveal/river", headers=headers, timeout=600)
 print(f"  Status: {r.status_code}")
 if r.status_code == 200:
     river = r.json()
@@ -134,7 +134,7 @@ else:
 # --- Step 6: Request Showdown ---
 print("\n=== Request Showdown ===")
 headers = make_auth_headers(sk1, addr1, TABLE_ID, "request_showdown", next_nonce(addr1))
-r = requests.post(f"{BASE}/api/table/{TABLE_ID}/request-showdown", headers=headers, timeout=120)
+r = requests.post(f"{BASE}/api/table/{TABLE_ID}/request-showdown", headers=headers, timeout=600)
 print(f"  Status: {r.status_code}")
 if r.status_code == 200:
     showdown = r.json()
