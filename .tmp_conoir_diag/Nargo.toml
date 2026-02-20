@@ -1,6 +1,0 @@
-[package]
-name = "diag_small"
-type = "bin"
-compiler_version = ">=0.36.0"
-
-[dependencies]
