@@ -228,6 +228,148 @@ pub async fn generate_proof_from_share_sets(
     trigger_and_collect_proof(session_id, circuit_dir, node_endpoints).await
 }
 
+#[derive(Deserialize)]
+struct NodePermLookupResponse {
+    mapped_indices: Vec<u32>,
+    salts: Vec<String>,
+}
+
+/// Resolve hole cards for a player by chaining permutation lookups across nodes
+/// and summing salts from all nodes at the original dealt positions.
+///
+/// Returns (card_values, combined_salts) for the given deck positions.
+pub async fn resolve_hole_cards(
+    node_endpoints: &[String],
+    table_id: u32,
+    card_positions: &[u32],
+) -> Result<(Vec<u32>, Vec<String>), String> {
+    if node_endpoints.len() != 3 {
+        return Err(format!(
+            "expected 3 MPC nodes, got {}",
+            node_endpoints.len()
+        ));
+    }
+
+    let client = reqwest::Client::new();
+
+    // Step 1: Query all 3 nodes in parallel with original positions to get salts.
+    // Also use node2's mapped_indices as the first step of the permutation chain.
+    let mut salt_handles = Vec::with_capacity(3);
+    for (i, endpoint) in node_endpoints.iter().enumerate() {
+        let url = format!("{}/table/{}/perm-lookup", endpoint, table_id);
+        let client = client.clone();
+        let positions = card_positions.to_vec();
+        let handle = tokio::spawn(async move {
+            let resp = client
+                .post(&url)
+                .json(&serde_json::json!({ "indices": positions }))
+                .send()
+                .await
+                .map_err(|e| format!("node {} perm-lookup failed: {}", i, e))?;
+            if !resp.status().is_success() {
+                let status = resp.status();
+                let body = resp
+                    .text()
+                    .await
+                    .unwrap_or_else(|_| "unable to read body".to_string());
+                return Err(format!(
+                    "node {} perm-lookup rejected: HTTP {}: {}",
+                    i, status, body
+                ));
+            }
+            let data: NodePermLookupResponse = resp
+                .json()
+                .await
+                .map_err(|e| format!("node {} perm-lookup parse failed: {}", i, e))?;
+            Ok::<(usize, NodePermLookupResponse), String>((i, data))
+        });
+        salt_handles.push(handle);
+    }
+
+    let mut node_responses: Vec<Option<NodePermLookupResponse>> = vec![None, None, None];
+    for handle in salt_handles {
+        let (idx, resp) = handle
+            .await
+            .map_err(|e| format!("perm-lookup join error: {}", e))??;
+        node_responses[idx] = Some(resp);
+    }
+
+    let resp0 = node_responses[0]
+        .take()
+        .ok_or("missing node 0 response")?;
+    let resp1 = node_responses[1]
+        .take()
+        .ok_or("missing node 1 response")?;
+    let resp2 = node_responses[2]
+        .take()
+        .ok_or("missing node 2 response")?;
+
+    // Sum salts from all 3 nodes (all at the same original positions).
+    // Salts are u64 values; sum fits in u128, well below BN254 modulus.
+    let num_cards = card_positions.len();
+    let mut combined_salts = Vec::with_capacity(num_cards);
+    for i in 0..num_cards {
+        let s0: u128 = resp0.salts[i]
+            .parse::<u64>()
+            .map_err(|e| format!("node0 salt parse: {}", e))?
+            .into();
+        let s1: u128 = resp1.salts[i]
+            .parse::<u64>()
+            .map_err(|e| format!("node1 salt parse: {}", e))?
+            .into();
+        let s2: u128 = resp2.salts[i]
+            .parse::<u64>()
+            .map_err(|e| format!("node2 salt parse: {}", e))?
+            .into();
+        combined_salts.push(format!("{}", s0 + s1 + s2));
+    }
+
+    // Step 2: Chain permutation lookups: node2 → node1 → node0.
+    // We already have node2's mapped_indices from step 1.
+    let step1 = resp2.mapped_indices;
+
+    // Query node1 with node2's mapped indices.
+    let step2 = query_perm_lookup(&client, &node_endpoints[1], table_id, &step1)
+        .await?
+        .mapped_indices;
+
+    // Query node0 with node1's result → final card values.
+    let final_cards = query_perm_lookup(&client, &node_endpoints[0], table_id, &step2)
+        .await?
+        .mapped_indices;
+
+    Ok((final_cards, combined_salts))
+}
+
+async fn query_perm_lookup(
+    client: &reqwest::Client,
+    endpoint: &str,
+    table_id: u32,
+    indices: &[u32],
+) -> Result<NodePermLookupResponse, String> {
+    let url = format!("{}/table/{}/perm-lookup", endpoint, table_id);
+    let resp = client
+        .post(&url)
+        .json(&serde_json::json!({ "indices": indices }))
+        .send()
+        .await
+        .map_err(|e| format!("perm-lookup to {} failed: {}", url, e))?;
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let body = resp
+            .text()
+            .await
+            .unwrap_or_else(|_| "unable to read body".to_string());
+        return Err(format!(
+            "perm-lookup to {} rejected: HTTP {}: {}",
+            url, status, body
+        ));
+    }
+    resp.json()
+        .await
+        .map_err(|e| format!("perm-lookup parse from {} failed: {}", url, e))
+}
+
 /// Check health of all MPC nodes.
 pub async fn check_node_health(endpoints: &[String]) -> Vec<bool> {
     let mut results = Vec::new();

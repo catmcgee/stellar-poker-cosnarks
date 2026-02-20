@@ -4,6 +4,7 @@
 //! the on-chain poker-table contract. Uses the same `tokio::process::Command`
 //! pattern as `mpc.rs` for co-noir subprocess execution.
 
+use ed25519_dalek::SigningKey;
 use serde::{Deserialize, Serialize};
 use tokio::process::Command;
 
@@ -33,6 +34,15 @@ impl SorobanConfig {
     pub fn is_configured(&self) -> bool {
         !self.poker_table_contract.is_empty() && self.secret_key != "test_secret"
     }
+
+    /// Derive the Stellar public address (G...) from the committee secret key (S...).
+    pub fn committee_address(&self) -> Result<String, String> {
+        let sk = stellar_strkey::ed25519::PrivateKey::from_string(&self.secret_key)
+            .map_err(|e| format!("invalid committee secret key: {:?}", e))?;
+        let signing_key = SigningKey::from_bytes(&sk.0);
+        let public_key = signing_key.verifying_key().to_bytes();
+        Ok(stellar_strkey::ed25519::PublicKey(public_key).to_string())
+    }
 }
 
 /// Submit a deal proof to the on-chain poker-table contract via `commit_deal`.
@@ -49,6 +59,7 @@ pub async fn submit_deal_proof(
         return Ok(String::new());
     }
 
+    let committee_addr = config.committee_address()?;
     let proof_hex = hex::encode(proof);
     let public_inputs_hex = hex::encode(public_inputs);
     let commitments_json = serde_json::to_string(hand_commitments)
@@ -71,7 +82,7 @@ pub async fn submit_deal_proof(
             "--table_id",
             &table_id.to_string(),
             "--committee",
-            &config.secret_key,
+            &committee_addr,
             "--deck_root",
             deck_root,
             "--hand_commitments",
@@ -104,6 +115,7 @@ pub async fn submit_reveal_proof(
         return Ok(String::new());
     }
 
+    let committee_addr = config.committee_address()?;
     let proof_hex = hex::encode(proof);
     let public_inputs_hex = hex::encode(public_inputs);
     let cards_json =
@@ -128,7 +140,7 @@ pub async fn submit_reveal_proof(
             "--table_id",
             &table_id.to_string(),
             "--committee",
-            &config.secret_key,
+            &committee_addr,
             "--cards",
             &cards_json,
             "--indices",
@@ -158,6 +170,7 @@ pub async fn submit_showdown_proof(
         return Ok(String::new());
     }
 
+    let committee_addr = config.committee_address()?;
     let proof_hex = hex::encode(proof);
     let public_inputs_hex = hex::encode(public_inputs);
     let hole_cards_json = serde_json::to_string(hole_cards)
@@ -180,7 +193,7 @@ pub async fn submit_showdown_proof(
             "--table_id",
             &table_id.to_string(),
             "--committee",
-            &config.secret_key,
+            &committee_addr,
             "--hole_cards",
             &hole_cards_json,
             "--salts",

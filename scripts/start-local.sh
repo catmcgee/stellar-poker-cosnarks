@@ -19,6 +19,19 @@ CONFIG_DIR="${PROJECT_DIR}/services/node/config/local"
 echo "=== Starting Stellar Poker MPC services locally ==="
 echo ""
 
+# Source Soroban env vars if available
+ENV_FILE="${PROJECT_DIR}/.env.local"
+if [ -f "$ENV_FILE" ]; then
+    echo "Loading Soroban config from .env.local"
+    set -a
+    # shellcheck disable=SC1090
+    source "$ENV_FILE"
+    set +a
+else
+    echo "NOTE: No .env.local found — Soroban submission disabled."
+    echo "      Run ./scripts/deploy-local.sh first to deploy contracts."
+fi
+
 # Check prerequisites
 command -v co-noir >/dev/null 2>&1 || { echo "ERROR: co-noir not found. Install with: cargo install --git https://github.com/TaceoLabs/co-snarks --branch main co-noir"; exit 1; }
 
@@ -54,6 +67,10 @@ echo "Starting Coordinator (port 8080)..."
 CIRCUIT_DIR="${PROJECT_DIR}/circuits" \
 CRS_DIR="${PROJECT_DIR}/crs" \
 BIND_ADDR="0.0.0.0:8080" \
+SOROBAN_RPC="${SOROBAN_RPC:-}" \
+POKER_TABLE_CONTRACT="${POKER_TABLE_CONTRACT:-}" \
+COMMITTEE_SECRET="${COMMITTEE_SECRET:-test_secret}" \
+NETWORK_PASSPHRASE="${NETWORK_PASSPHRASE:-Test SDF Network ; September 2015}" \
     cargo run -p coordinator --quiet &
 PID_COORD=$!
 

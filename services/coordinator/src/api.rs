@@ -61,6 +61,14 @@ pub struct TableStateResponse {
 }
 
 #[derive(Serialize)]
+pub struct PlayerCardsResponse {
+    pub card1: u32,
+    pub card2: u32,
+    pub salt1: String,
+    pub salt2: String,
+}
+
+#[derive(Serialize)]
 pub struct CommitteeStatusResponse {
     pub nodes: usize,
     pub healthy: Vec<bool>,
@@ -161,12 +169,22 @@ pub async fn request_deal(
         Some(tx_hash)
     };
 
+    let player_card_positions: Vec<(u32, u32)> = (0..req.players.len())
+        .map(|p| {
+            (
+                parsed_deal.dealt_indices[p * 2],
+                parsed_deal.dealt_indices[p * 2 + 1],
+            )
+        })
+        .collect();
+
     let session = TableSession {
         table_id,
         deck_root: parsed_deal.deck_root.clone(),
         hand_commitments: parsed_deal.hand_commitments.clone(),
         player_order: req.players,
         dealt_indices: parsed_deal.dealt_indices,
+        player_card_positions,
         board_indices: Vec::new(),
         phase: "preflop".to_string(),
         deal_session_id: deal_proof.session_id.clone(),
@@ -459,13 +477,57 @@ pub async fn request_showdown(
 
 /// GET /api/table/{table_id}/player/{address}/cards
 ///
-/// Hole-card delivery is no longer handled by the coordinator.
+/// Resolve and return a player's hole cards by chaining permutation lookups
+/// across MPC nodes.
 pub async fn get_player_cards(
-    State(_state): State<AppState>,
-    Path((_table_id, _address)): Path<(u32, String)>,
-    _headers: HeaderMap,
-) -> StatusCode {
-    StatusCode::GONE
+    State(state): State<AppState>,
+    Path((table_id, address)): Path<(u32, String)>,
+    headers: HeaderMap,
+) -> Result<Json<PlayerCardsResponse>, StatusCode> {
+    validate_table_id(table_id)?;
+    let auth =
+        validate_signed_request(&state, &headers, table_id, "get_player_cards", Some(&address))
+            .await?;
+
+    let tables = state.tables.read().await;
+    let session = tables.get(&table_id).ok_or(StatusCode::NOT_FOUND)?;
+
+    if !session.player_order.iter().any(|p| p == &auth.address) {
+        return Err(StatusCode::UNAUTHORIZED);
+    }
+
+    let player_index = session
+        .player_order
+        .iter()
+        .position(|p| p == &address)
+        .ok_or(StatusCode::NOT_FOUND)?;
+
+    let (pos1, pos2) = session
+        .player_card_positions
+        .get(player_index)
+        .ok_or(StatusCode::NOT_FOUND)?;
+
+    let node_endpoints = state.mpc_config.node_endpoints.clone();
+    let positions = vec![*pos1, *pos2];
+    drop(tables); // release read lock before async call
+
+    let (cards, salts) = mpc::resolve_hole_cards(&node_endpoints, table_id, &positions)
+        .await
+        .map_err(|e| {
+            tracing::error!("Failed to resolve hole cards: {}", e);
+            StatusCode::BAD_GATEWAY
+        })?;
+
+    if cards.len() < 2 || salts.len() < 2 {
+        return Err(StatusCode::BAD_GATEWAY);
+    }
+
+    Ok(Json(PlayerCardsResponse {
+        card1: cards[0],
+        card2: cards[1],
+        salt1: salts[0].clone(),
+        salt2: salts[1].clone(),
+    }))
 }
 
 /// GET /api/table/{table_id}/state

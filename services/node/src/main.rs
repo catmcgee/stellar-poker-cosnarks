@@ -94,6 +94,10 @@ async fn main() {
             "/table/:table_id/dispatch-shares",
             post(api::post_dispatch_shares),
         )
+        .route(
+            "/table/:table_id/perm-lookup",
+            post(api::post_perm_lookup),
+        )
         .route("/session/:id/shares", post(api::post_shares))
         .route("/session/:id/generate", post(api::post_generate))
         .route("/session/:id/status", get(api::get_status))

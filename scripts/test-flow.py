@@ -92,6 +92,54 @@ else:
     print(f"  Deal failed — stopping here.")
     exit(1)
 
+# --- Step 2b: Retrieve Hole Cards ---
+SUITS = ["Spades", "Hearts", "Diamonds", "Clubs"]
+RANKS = ["2", "3", "4", "5", "6", "7", "8", "9", "10", "J", "Q", "K", "A"]
+
+def decode_card(value: int) -> str:
+    suit = SUITS[value // 13]
+    rank = RANKS[value % 13]
+    return f"{rank} of {suit}"
+
+print("\n=== Retrieve Hole Cards: Player 1 ===")
+headers = make_auth_headers(sk1, addr1, TABLE_ID, "get_player_cards", next_nonce(addr1))
+r = requests.get(f"{BASE}/api/table/{TABLE_ID}/player/{addr1}/cards", headers=headers, timeout=30)
+print(f"  Status: {r.status_code}")
+if r.status_code == 200:
+    cards1 = r.json()
+    print(f"  Card 1: {cards1['card1']} ({decode_card(cards1['card1'])})")
+    print(f"  Card 2: {cards1['card2']} ({decode_card(cards1['card2'])})")
+    print(f"  Salt 1: {cards1['salt1']}")
+    print(f"  Salt 2: {cards1['salt2']}")
+    assert 0 <= cards1['card1'] <= 51, f"card1 out of range: {cards1['card1']}"
+    assert 0 <= cards1['card2'] <= 51, f"card2 out of range: {cards1['card2']}"
+    assert cards1['card1'] != cards1['card2'], "player 1 got duplicate cards"
+else:
+    print(f"  Error: {r.text}")
+    print("  (hole card delivery not critical, continuing...)")
+
+print("\n=== Retrieve Hole Cards: Player 2 ===")
+headers = make_auth_headers(sk2, addr2, TABLE_ID, "get_player_cards", next_nonce(addr2))
+r = requests.get(f"{BASE}/api/table/{TABLE_ID}/player/{addr2}/cards", headers=headers, timeout=30)
+print(f"  Status: {r.status_code}")
+if r.status_code == 200:
+    cards2 = r.json()
+    print(f"  Card 1: {cards2['card1']} ({decode_card(cards2['card1'])})")
+    print(f"  Card 2: {cards2['card2']} ({decode_card(cards2['card2'])})")
+    print(f"  Salt 1: {cards2['salt1']}")
+    print(f"  Salt 2: {cards2['salt2']}")
+    assert 0 <= cards2['card1'] <= 51, f"card1 out of range: {cards2['card1']}"
+    assert 0 <= cards2['card2'] <= 51, f"card2 out of range: {cards2['card2']}"
+    assert cards2['card1'] != cards2['card2'], "player 2 got duplicate cards"
+    # Verify the two players got different cards
+    p1_cards = {cards1['card1'], cards1['card2']}
+    p2_cards = {cards2['card1'], cards2['card2']}
+    assert len(p1_cards | p2_cards) == 4, "players share a card!"
+    print(f"  All 4 hole cards are distinct: OK")
+else:
+    print(f"  Error: {r.text}")
+    print("  (hole card delivery not critical, continuing...)")
+
 # --- Step 3: Request Reveal Flop ---
 print("\n=== Request Reveal: Flop ===")
 headers = make_auth_headers(sk1, addr1, TABLE_ID, "request_reveal:flop", next_nonce(addr1))

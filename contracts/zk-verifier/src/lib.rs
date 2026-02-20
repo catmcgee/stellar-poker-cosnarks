@@ -89,7 +89,7 @@ impl ZkVerifierContract {
     /// Verify an UltraHonk proof for a given circuit type.
     ///
     /// 1. Loads the VK for the circuit type
-    /// 2. Validates proof size (14,592 bytes = 456 fields * 32)
+    /// 2. Validates proof size (14,624 bytes = 457 fields * 32)
     /// 3. Runs full UltraHonk verification (sumcheck + shplonk pairing)
     /// 4. Stores proof hash for auditability
     pub fn verify_proof(

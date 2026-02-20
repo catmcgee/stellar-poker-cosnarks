@@ -193,6 +193,54 @@ pub async fn prepare_showdown(
     Ok(ShowdownPreparation { share_set_id })
 }
 
+pub fn perm_lookup(
+    table_id: u32,
+    indices: &[u32],
+    tables: &HashMap<u32, PrivateTableState>,
+) -> Result<Vec<u32>, String> {
+    let table = tables
+        .get(&table_id)
+        .ok_or_else(|| format!("unknown table {}", table_id))?;
+    let contribution = table
+        .contribution
+        .as_ref()
+        .ok_or_else(|| format!("table {} has no active deal contribution", table_id))?;
+    indices
+        .iter()
+        .map(|&idx| {
+            contribution
+                .permutation
+                .get(idx as usize)
+                .copied()
+                .ok_or_else(|| format!("permutation index {} out of range", idx))
+        })
+        .collect()
+}
+
+pub fn salt_lookup(
+    table_id: u32,
+    indices: &[u32],
+    tables: &HashMap<u32, PrivateTableState>,
+) -> Result<Vec<String>, String> {
+    let table = tables
+        .get(&table_id)
+        .ok_or_else(|| format!("unknown table {}", table_id))?;
+    let contribution = table
+        .contribution
+        .as_ref()
+        .ok_or_else(|| format!("table {} has no active deal contribution", table_id))?;
+    indices
+        .iter()
+        .map(|&idx| {
+            contribution
+                .salts
+                .get(idx as usize)
+                .cloned()
+                .ok_or_else(|| format!("salt index {} out of range", idx))
+        })
+        .collect()
+}
+
 pub fn clone_share_set(
     table_id: u32,
     share_set_id: &str,

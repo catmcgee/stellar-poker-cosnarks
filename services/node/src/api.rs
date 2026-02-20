@@ -51,6 +51,17 @@ pub struct SharesRequest {
     pub total_parties: u32,
 }
 
+#[derive(Deserialize)]
+pub struct PermLookupRequest {
+    pub indices: Vec<u32>,
+}
+
+#[derive(Serialize)]
+pub struct PermLookupResponse {
+    pub mapped_indices: Vec<u32>,
+    pub salts: Vec<String>,
+}
+
 #[derive(Serialize)]
 pub struct StatusResponse {
     pub session_id: String,
@@ -185,6 +196,31 @@ pub async fn post_dispatch_shares(
     }
 
     Ok(StatusCode::OK)
+}
+
+/// POST /table/:table_id/perm-lookup
+///
+/// Look up permutation mappings and salts for given deck positions.
+/// Used by the coordinator to resolve hole cards after a deal.
+pub async fn post_perm_lookup(
+    State(state): State<NodeState>,
+    Path(table_id): Path<u32>,
+    Json(req): Json<PermLookupRequest>,
+) -> Result<Json<PermLookupResponse>, (StatusCode, String)> {
+    if req.indices.is_empty() {
+        return Err((StatusCode::BAD_REQUEST, "indices must not be empty".to_string()));
+    }
+
+    let tables = state.tables.read().await;
+    let mapped_indices = private_table::perm_lookup(table_id, &req.indices, &tables)
+        .map_err(|e| (StatusCode::BAD_REQUEST, e))?;
+    let salts = private_table::salt_lookup(table_id, &req.indices, &tables)
+        .map_err(|e| (StatusCode::BAD_REQUEST, e))?;
+
+    Ok(Json(PermLookupResponse {
+        mapped_indices,
+        salts,
+    }))
 }
 
 /// POST /session/:id/shares

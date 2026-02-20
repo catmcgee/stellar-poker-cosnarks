@@ -60,6 +60,8 @@ struct TableSession {
     player_order: Vec<String>,
     /// Cards already dealt/revealed (indices).
     dealt_indices: Vec<u32>,
+    /// Per-player dealt card positions: (card1_deck_pos, card2_deck_pos).
+    player_card_positions: Vec<(u32, u32)>,
     /// Revealed board indices.
     board_indices: Vec<u32>,
     /// Current game phase.
