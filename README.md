@@ -67,7 +67,7 @@ stellar-poker/
 ## Prerequisites
 
 - Rust + `wasm32-unknown-unknown` target
-- Nargo 1.0.0-beta.13+ (Noir compiler)
+- Nargo 1.0.0-beta.17 (Noir compiler)
 - Node.js 18+
 - Docker (for local Soroban and MPC nodes)
 - Stellar CLI (`cargo install stellar-cli --features opt`)
@@ -96,8 +96,8 @@ cargo build --release --target wasm32-unknown-unknown -p poker-table
 
 ### Build/test circuits
 ```bash
-cd circuits/lib && nargo test    # Run all 6 circuit tests
-cd circuits/deal_valid && nargo compile
+./scripts/compile-circuits.sh
+cd circuits/lib && nargo test
 ```
 
 ### Run web app

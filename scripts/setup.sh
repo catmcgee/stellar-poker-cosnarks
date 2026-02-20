@@ -33,7 +33,7 @@ echo "Checking Nargo (Noir)..."
 if ! command -v nargo >/dev/null 2>&1; then
   echo "  Nargo not found. Install with:"
   echo "    curl -L https://raw.githubusercontent.com/noir-lang/noirup/refs/heads/main/install | bash"
-  echo "    noirup -v 1.0.0-beta.13"
+  echo "    noirup -v 1.0.0-beta.17"
   exit 1
 fi
 echo "  $(nargo --version)"
@@ -55,6 +55,7 @@ echo "  All crates compile."
 # --- Check Noir circuits ---
 echo ""
 echo "=== Checking Noir circuits ==="
+./scripts/compile-circuits.sh
 for circuit in lib deal_valid reveal_board_valid showdown_valid; do
   echo "  Checking $circuit..."
   (cd "circuits/$circuit" && nargo check 2>/dev/null)

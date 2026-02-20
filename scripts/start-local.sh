@@ -4,7 +4,8 @@
 # Prerequisites:
 #   - co-noir installed: cargo install --git https://github.com/TaceoLabs/co-snarks --branch main co-noir
 #   - CRS downloaded: ./scripts/download-crs.sh
-#   - Circuits compiled: (cd circuits/deal_valid && nargo compile) etc.
+#   - Circuits compiled with co-noir-compatible nargo:
+#       ./scripts/compile-circuits.sh
 #
 # Usage:
 #   ./scripts/start-local.sh
@@ -21,9 +22,13 @@ echo ""
 # Check prerequisites
 command -v co-noir >/dev/null 2>&1 || { echo "ERROR: co-noir not found. Install with: cargo install --git https://github.com/TaceoLabs/co-snarks --branch main co-noir"; exit 1; }
 
+if [ "${SKIP_CIRCUIT_COMPILE:-0}" != "1" ]; then
+    "${PROJECT_DIR}/scripts/compile-circuits.sh"
+fi
+
 for circuit in deal_valid reveal_board_valid showdown_valid; do
     if [ ! -f "${PROJECT_DIR}/circuits/${circuit}/target/${circuit}.json" ]; then
-        echo "ERROR: Circuit ${circuit} not compiled. Run: (cd circuits/${circuit} && nargo compile)"
+        echo "ERROR: Circuit ${circuit} not compiled. Run: ./scripts/compile-circuits.sh"
         exit 1
     fi
 done

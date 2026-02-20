@@ -1692,8 +1692,13 @@ dependencies = [
 name = "mpc-node"
 version = "0.1.0"
 dependencies = [
+ "ark-bn254 0.4.0",
+ "ark-ff 0.4.2",
  "axum",
  "base64",
+ "hex",
+ "rand",
+ "reqwest",
  "serde",
  "serde_json",
  "tempfile",

@@ -93,9 +93,6 @@ export function Table({ tableId }: TableProps) {
       try {
         const result = await api.requestDeal(tableId, players, wallet);
 
-        // Fetch authenticated player's private cards.
-        const cards = await api.getPlayerCards(tableId, wallet.address, wallet);
-
         setGame((prev) => ({
           ...prev,
           phase: "preflop",
@@ -112,10 +109,6 @@ export function Table({ tableId }: TableProps) {
             betThisRound: 0,
             folded: false,
             allIn: false,
-            cards:
-              address === wallet.address
-                ? ([cards.card1, cards.card2] as [number, number])
-                : undefined,
           })),
         }));
       } catch (e) {

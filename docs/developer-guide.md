@@ -9,10 +9,10 @@
    rustup target add wasm32-unknown-unknown
    ```
 
-2. **Nargo** (Noir compiler) v1.0.0-beta.13+:
+2. **Nargo** (Noir compiler) v1.0.0-beta.17:
    ```bash
    curl -L https://raw.githubusercontent.com/noir-lang/noirup/refs/heads/main/install | bash
-   noirup -v 1.0.0-beta.13
+   noirup -v 1.0.0-beta.17
    ```
 
 3. **Stellar CLI**:
@@ -58,8 +58,8 @@ Each circuit is a Nargo package:
 
 Compile and test:
 ```bash
+./scripts/compile-circuits.sh
 cd circuits/lib && nargo test
-cd circuits/deal_valid && nargo compile
 ```
 
 Key Noir patterns used:

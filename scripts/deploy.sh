@@ -15,7 +15,6 @@ echo ""
 
 # Check dependencies
 command -v stellar >/dev/null 2>&1 || { echo "stellar CLI not found. Install: cargo install stellar-cli"; exit 1; }
-command -v nargo >/dev/null 2>&1 || { echo "nargo not found. Install: noirup -v 1.0.0-beta.13"; exit 1; }
 
 # --- Step 1: Build Soroban contracts ---
 echo "=== Building Soroban contracts ==="
@@ -33,10 +32,7 @@ done
 # --- Step 2: Compile Noir circuits ---
 echo ""
 echo "=== Compiling Noir circuits ==="
-for circuit in deal_valid reveal_board_valid showdown_valid; do
-  echo "  Compiling $circuit..."
-  (cd "circuits/$circuit" && nargo compile)
-done
+./scripts/compile-circuits.sh
 
 # --- Step 3: Generate deployer identity ---
 echo ""

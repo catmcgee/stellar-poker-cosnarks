@@ -1,101 +1,99 @@
 /// Deal Validity Circuit
 ///
-/// Proves that from a committed deck, specific cards were dealt to specific
-/// players, and the hand commitments match.
+/// The deck is derived in-circuit from per-party private contributions:
+/// - party permutation shares
+/// - party salt shares
 ///
-/// This circuit is proven inside MPC (via TACEO coNoir) so that no single
-/// party knows the full deck or all players' cards.
-///
-/// Public inputs:
-///   - deck_root: Merkle root of the committed deck
-///   - hand_commitments: Poseidon2 hash of each player's hole cards
-///   - dealt_indices: which deck positions were dealt to each player
-///
-/// Private inputs (secret-shared in MPC):
-///   - deck: the full shuffled deck (52 card values)
-///   - salts: per-card randomness for commitments
-///   - player_cards: each player's 2 hole cards
+/// This removes any single-node plaintext deck dependency during prepare/split.
 
 use stellar_poker_lib::cards;
 use stellar_poker_lib::commitments;
 use stellar_poker_lib::merkle;
+use stellar_poker_lib::shuffle;
 
 /// Maximum players supported (for fixed circuit size)
 global MAX_PLAYERS: u32 = 6;
 
 fn main(
     // Private inputs (secret-shared in MPC)
-    deck: [Field; 52],
-    salts: [Field; 52],
+    party0_permutation: [u32; 52],
+    party1_permutation: [u32; 52],
+    party2_permutation: [u32; 52],
+    party0_salts: [Field; 52],
+    party1_salts: [Field; 52],
+    party2_salts: [Field; 52],
 
     // Public inputs
-    deck_root: pub Field,
     num_players: pub u32,
-    hand_commitments: pub [Field; MAX_PLAYERS],
-    dealt_card1_indices: pub [u32; MAX_PLAYERS],
-    dealt_card2_indices: pub [u32; MAX_PLAYERS],
-) {
-    // 1. Verify all cards in deck are valid and unique
+) -> pub (Field, [Field; MAX_PLAYERS], [u32; MAX_PLAYERS], [u32; MAX_PLAYERS]) {
+    assert(num_players >= 2, "need at least 2 players");
+    assert(num_players <= MAX_PLAYERS, "too many players");
+
+    let (deck, salts) = shuffle::derive_shared_deck_and_salts(
+        party0_permutation,
+        party1_permutation,
+        party2_permutation,
+        party0_salts,
+        party1_salts,
+        party2_salts,
+    );
+
+    // 1. Verify all cards in derived deck are valid and unique.
     cards::assert_valid_deck(deck);
 
-    // 2. Compute card commitments and verify Merkle root
+    // 2. Compute card commitments and Merkle root.
     let mut leaves: [Field; 64] = [0; 64];
     for i in 0..52 {
         leaves[i] = commitments::commit_card(deck[i], salts[i]);
     }
-    // Padding leaves 52-63 are zero
+    // Padding leaves 52..63 are zero.
+    let deck_root = merkle::compute_merkle_root(leaves);
 
-    let computed_root = merkle::compute_merkle_root(leaves);
-    assert(computed_root == deck_root, "deck root mismatch");
+    // 3. Deterministically assign two cards per player by seat order.
+    let mut hand_commitments: [Field; MAX_PLAYERS] = [0; MAX_PLAYERS];
+    let mut dealt_card1_indices: [u32; MAX_PLAYERS] = [0; MAX_PLAYERS];
+    let mut dealt_card2_indices: [u32; MAX_PLAYERS] = [0; MAX_PLAYERS];
 
-    // 3. Verify each player's hand commitment
     for p in 0..MAX_PLAYERS {
         if p < num_players {
-            let idx1 = dealt_card1_indices[p];
-            let idx2 = dealt_card2_indices[p];
+            let idx1 = p * 2;
+            let idx2 = idx1 + 1;
+            assert(idx2 < 52, "dealt index out of range");
 
-            // Cards must be within deck range
-            assert(idx1 < 52, "card index out of range");
-            assert(idx2 < 52, "card index out of range");
+            dealt_card1_indices[p] = idx1;
+            dealt_card2_indices[p] = idx2;
 
-            // Indices must be different
-            assert(idx1 != idx2, "same card dealt twice to player");
-
-            // Compute expected hand commitment
-            let card1_commit = commitments::commit_card(deck[idx1], salts[idx1]);
-            let card2_commit = commitments::commit_card(deck[idx2], salts[idx2]);
-            let expected_hand_commit = commitments::commit_hand(card1_commit, card2_commit);
-
-            assert(
-                expected_hand_commit == hand_commitments[p],
-                "hand commitment mismatch",
-            );
+            let c1_commit = commitments::commit_card(deck[idx1], salts[idx1]);
+            let c2_commit = commitments::commit_card(deck[idx2], salts[idx2]);
+            hand_commitments[p] = commitments::commit_hand(c1_commit, c2_commit);
         }
     }
 
-    // 4. Verify no card index is dealt to multiple players
+    // 4. Sanity check: no duplicate dealt indices across active players.
     for p1 in 0..MAX_PLAYERS {
         if p1 < num_players {
             for p2 in (p1 + 1)..MAX_PLAYERS {
                 if p2 < num_players {
                     assert(
                         dealt_card1_indices[p1] != dealt_card1_indices[p2],
-                        "same card dealt to multiple players",
+                        "same card dealt twice",
                     );
                     assert(
                         dealt_card1_indices[p1] != dealt_card2_indices[p2],
-                        "same card dealt to multiple players",
+                        "same card dealt twice",
                     );
                     assert(
                         dealt_card2_indices[p1] != dealt_card1_indices[p2],
-                        "same card dealt to multiple players",
+                        "same card dealt twice",
                     );
                     assert(
                         dealt_card2_indices[p1] != dealt_card2_indices[p2],
-                        "same card dealt to multiple players",
+                        "same card dealt twice",
                     );
                 }
             }
         }
     }
+
+    (deck_root, hand_commitments, dealt_card1_indices, dealt_card2_indices)
 }

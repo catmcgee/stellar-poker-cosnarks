@@ -1,13 +1,22 @@
 # co-noir REP3 party configuration for Node 0 (local development)
 
-[party]
+[network]
+my_id = 0
+bind_addr = "0.0.0.0:10000"
+key_path = "services/node/data/key0.der"
+max_frame_length = 469_762_056
+
+[[network.parties]]
 id = 0
-bind = "0.0.0.0:10000"
+dns_name = "127.0.0.1:10000"
+cert_path = "services/node/data/cert0.der"
 
-[[peers]]
+[[network.parties]]
 id = 1
-address = "127.0.0.1:10001"
+dns_name = "127.0.0.1:10001"
+cert_path = "services/node/data/cert1.der"
 
-[[peers]]
+[[network.parties]]
 id = 2
-address = "127.0.0.1:10002"
+dns_name = "127.0.0.1:10002"
+cert_path = "services/node/data/cert2.der"

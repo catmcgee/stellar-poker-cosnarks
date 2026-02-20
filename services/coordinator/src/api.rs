@@ -10,11 +10,9 @@ use ed25519_dalek::{Signature, Verifier, VerifyingKey};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::time::{SystemTime, UNIX_EPOCH};
+use uuid::Uuid;
 
-use crate::{
-    deck, hand_eval, mpc, soroban, AppState, PlayerPrivateCards, PreparedReveal, PreparedShowdown,
-    TableSession,
-};
+use crate::{mpc, soroban, AppState, TableSession};
 
 const MAX_PLAYERS: usize = 6;
 const MIN_PLAYERS: usize = 2;
@@ -63,14 +61,6 @@ pub struct TableStateResponse {
 }
 
 #[derive(Serialize)]
-pub struct PlayerCardsResponse {
-    pub card1: u32,
-    pub card2: u32,
-    pub salt1: String,
-    pub salt2: String,
-}
-
-#[derive(Serialize)]
 pub struct CommitteeStatusResponse {
     pub nodes: usize,
     pub healthy: Vec<bool>,
@@ -83,8 +73,8 @@ struct AuthContext {
 
 /// POST /api/table/{table_id}/request-deal
 ///
-/// Shuffle deck, deal hole cards, pre-generate reveal/showdown proofs, and submit the
-/// deal proof on-chain atomically.
+/// All MPC nodes prepare private deal contributions and exchange share fragments.
+/// Coordinator triggers proof generation and parses public outputs from the proof.
 pub async fn request_deal(
     State(state): State<AppState>,
     Path(table_id): Path<u32>,
@@ -113,46 +103,43 @@ pub async fn request_deal(
         }
     }
 
-    // Shuffle deck (coordinator generates, then shares via MPC). This value is intentionally
-    // not persisted in TableSession; only commitments and revealed per-player secrets are kept.
-    let deck_state = deck::shuffle_deck_dev();
-
-    let mut player_private_cards = HashMap::new();
-    let mut dealt_indices = Vec::new();
-    let mut player_indices: Vec<(u32, u32)> = Vec::new();
-
-    for (seat, address) in req.players.iter().enumerate() {
-        let idx1 = (seat as u32) * 2;
-        let idx2 = idx1 + 1;
-
-        player_private_cards.insert(
-            address.clone(),
-            PlayerPrivateCards {
-                card1: deck_state.cards[idx1 as usize],
-                card2: deck_state.cards[idx2 as usize],
-                salt1: deck_state.salts[idx1 as usize].clone(),
-                salt2: deck_state.salts[idx2 as usize].clone(),
-            },
-        );
-
-        dealt_indices.push(idx1);
-        dealt_indices.push(idx2);
-        player_indices.push((idx1, idx2));
+    if state.mpc_config.node_endpoints.is_empty() {
+        return Err(StatusCode::SERVICE_UNAVAILABLE);
     }
 
-    // Generate deal proof via MPC.
-    let deal_proof = mpc::generate_deal_proof(
+    let prepared_deal = mpc::prepare_deal_from_nodes(
         &state.mpc_config.node_endpoints,
         &state.mpc_config.circuit_dir,
-        &deck_state.cards,
-        &deck_state.salts,
-        &player_indices,
+        table_id,
+        &req.players,
+    )
+    .await
+    .map_err(|e| {
+        tracing::error!("Deal preparation failed: {}", e);
+        StatusCode::BAD_GATEWAY
+    })?;
+
+    let proof_session_id = format!("table-{}-deal-{}", table_id, Uuid::new_v4());
+    let deal_proof = mpc::generate_proof_from_share_sets(
+        table_id,
+        &prepared_deal.share_set_ids,
+        &proof_session_id,
+        "deal_valid",
+        &state.mpc_config.circuit_dir,
+        &state.mpc_config.node_endpoints,
     )
     .await
     .map_err(|e| {
         tracing::error!("Deal proof generation failed: {}", e);
-        StatusCode::INTERNAL_SERVER_ERROR
+        StatusCode::BAD_GATEWAY
     })?;
+
+    let parsed_deal = parse_deal_outputs(&deal_proof.public_inputs, req.players.len()).map_err(
+        |e| {
+            tracing::error!("Deal public input parsing failed: {}", e);
+            StatusCode::BAD_GATEWAY
+        },
+    )?;
 
     if deal_proof.proof.len() != PROOF_BYTES {
         tracing::error!(
@@ -163,138 +150,13 @@ pub async fn request_deal(
         return Err(StatusCode::BAD_GATEWAY);
     }
 
-    // Compute hand commitments in seat order.
-    let hand_commitments: Vec<String> = player_indices
-        .iter()
-        .map(|(idx1, idx2)| deck::compute_hand_commitment(&deck_state, *idx1, *idx2))
-        .collect();
-
-    // Pre-generate all reveal proofs now, so the coordinator does not persist deck plaintext.
-    let mut reveal_plans: HashMap<String, PreparedReveal> = HashMap::new();
-    let mut used_indices = dealt_indices.clone();
-    let mut full_board_indices: Vec<u32> = Vec::new();
-
-    for (phase, count) in [("flop", 3usize), ("turn", 1usize), ("river", 1usize)] {
-        let indices = deck::next_card_indices(&used_indices, count);
-        let cards: Vec<u32> = indices
-            .iter()
-            .map(|&i| deck_state.cards[i as usize])
-            .collect();
-
-        let reveal_proof = mpc::generate_reveal_proof(
-            &state.mpc_config.node_endpoints,
-            &state.mpc_config.circuit_dir,
-            &deck_state.cards,
-            &deck_state.salts,
-            &indices,
-            &used_indices,
-        )
-        .await
-        .map_err(|e| {
-            tracing::error!("{} proof generation failed: {}", phase, e);
-            StatusCode::INTERNAL_SERVER_ERROR
-        })?;
-
-        if reveal_proof.proof.len() != PROOF_BYTES {
-            tracing::error!(
-                "{} proof size mismatch: got {} bytes, expected {}",
-                phase,
-                reveal_proof.proof.len(),
-                PROOF_BYTES
-            );
-            return Err(StatusCode::BAD_GATEWAY);
-        }
-
-        reveal_plans.insert(
-            phase.to_string(),
-            PreparedReveal {
-                cards: cards.clone(),
-                indices: indices.clone(),
-                proof: reveal_proof.proof,
-                public_inputs: reveal_proof
-                    .public_inputs
-                    .iter()
-                    .map(|s| s.as_bytes())
-                    .collect::<Vec<_>>()
-                    .concat(),
-                session_id: reveal_proof.session_id,
-                submitted_tx_hash: None,
-            },
-        );
-
-        used_indices.extend(indices.iter().copied());
-        full_board_indices.extend(indices);
-    }
-
-    // Pre-compute showdown payload.
-    let board_cards: Vec<u32> = full_board_indices
-        .iter()
-        .map(|&i| deck_state.cards[i as usize])
-        .collect();
-
-    let mut hole_cards: Vec<(u32, u32)> = Vec::new();
-    let mut salt_pairs: Vec<(String, String)> = Vec::new();
-    for address in &req.players {
-        let cards = player_private_cards
-            .get(address)
-            .ok_or(StatusCode::INTERNAL_SERVER_ERROR)?;
-        hole_cards.push((cards.card1, cards.card2));
-        salt_pairs.push((cards.salt1.clone(), cards.salt2.clone()));
-    }
-
-    let mut best_score = 0u32;
-    let mut winner_index = 0u32;
-    for (i, (c1, c2)) in hole_cards.iter().enumerate() {
-        let mut seven_cards = [0u32; 7];
-        seven_cards[0] = *c1;
-        seven_cards[1] = *c2;
-        for (j, &bc) in board_cards.iter().enumerate().take(5) {
-            seven_cards[2 + j] = bc;
-        }
-        let score = hand_eval::evaluate_hand_rank(&seven_cards);
-        if score > best_score {
-            best_score = score;
-            winner_index = i as u32;
-        }
-    }
-
-    let showdown_proof = mpc::generate_showdown_proof(
-        &state.mpc_config.node_endpoints,
-        &state.mpc_config.circuit_dir,
-        &hole_cards,
-        &board_cards,
-        &salt_pairs,
-        &hand_commitments,
-        winner_index,
-    )
-    .await
-    .map_err(|e| {
-        tracing::error!("Showdown proof generation failed: {}", e);
-        StatusCode::INTERNAL_SERVER_ERROR
-    })?;
-
-    if showdown_proof.proof.len() != PROOF_BYTES {
-        tracing::error!(
-            "Showdown proof size mismatch: got {} bytes, expected {}",
-            showdown_proof.proof.len(),
-            PROOF_BYTES
-        );
-        return Err(StatusCode::BAD_GATEWAY);
-    }
-
-    // Atomic submission rule: if submission fails, return error and do not persist session.
     let tx_hash = soroban::submit_deal_proof(
         &state.soroban_config,
         table_id,
         &deal_proof.proof,
-        &deal_proof
-            .public_inputs
-            .iter()
-            .map(|s| s.as_bytes())
-            .collect::<Vec<_>>()
-            .concat(),
-        &deck_state.merkle_root,
-        &hand_commitments,
+        &concat_public_inputs(&deal_proof.public_inputs),
+        &parsed_deal.deck_root,
+        &parsed_deal.hand_commitments,
     )
     .await
     .map_err(|e| {
@@ -308,40 +170,31 @@ pub async fn request_deal(
         Some(tx_hash)
     };
 
-    let showdown_plan = PreparedShowdown {
-        winner: req.players[winner_index as usize].clone(),
-        winner_index,
-        hole_cards,
-        proof: showdown_proof.proof,
-        public_inputs: showdown_proof
-            .public_inputs
-            .iter()
-            .map(|s| s.as_bytes())
-            .collect::<Vec<_>>()
-            .concat(),
-        session_id: showdown_proof.session_id,
-        submitted_tx_hash: None,
-    };
-
     let session = TableSession {
         table_id,
-        deck_commitments: deck_state.commitments,
-        deck_root: deck_state.merkle_root.clone(),
-        player_cards: player_private_cards,
+        deck_root: parsed_deal.deck_root.clone(),
+        hand_commitments: parsed_deal.hand_commitments.clone(),
         player_order: req.players,
-        dealt_indices,
+        dealt_indices: parsed_deal.dealt_indices,
         board_indices: Vec::new(),
-        reveal_plans,
-        showdown_plan,
         phase: "preflop".to_string(),
+        deal_session_id: deal_proof.session_id.clone(),
+        deal_tx_hash: tx_hash.clone(),
+        reveal_tx_hashes: HashMap::new(),
+        reveal_session_ids: HashMap::new(),
+        revealed_cards_by_phase: HashMap::new(),
+        showdown_tx_hash: None,
+        showdown_session_id: None,
+        showdown_result: None,
+        proof_nonce: 0,
     };
 
     state.tables.write().await.insert(table_id, session);
 
     Ok(Json(DealResponse {
         status: "dealt".to_string(),
-        deck_root: deck_state.merkle_root,
-        hand_commitments,
+        deck_root: parsed_deal.deck_root,
+        hand_commitments: parsed_deal.hand_commitments,
         proof_size: deal_proof.proof.len(),
         session_id: deal_proof.session_id,
         tx_hash,
@@ -349,8 +202,6 @@ pub async fn request_deal(
 }
 
 /// POST /api/table/{table_id}/request-reveal/{phase}
-///
-/// Reveal community cards (flop=3, turn=1, river=1).
 pub async fn request_reveal(
     State(state): State<AppState>,
     Path((table_id, phase)): Path<(u32, String)>,
@@ -362,6 +213,10 @@ pub async fn request_reveal(
     let action = format!("request_reveal:{}", phase);
     enforce_rate_limit(&state, &headers, table_id, &action).await?;
     let auth = validate_signed_request(&state, &headers, table_id, &action, None).await?;
+
+    if state.mpc_config.node_endpoints.is_empty() {
+        return Err(StatusCode::SERVICE_UNAVAILABLE);
+    }
 
     let mut tables = state.tables.write().await;
     let session = tables.get_mut(&table_id).ok_or(StatusCode::NOT_FOUND)?;
@@ -376,34 +231,87 @@ pub async fn request_reveal(
         "turn" => "river",
         _ => return Err(StatusCode::CONFLICT),
     };
-
     if phase != expected_next_phase {
         return Err(StatusCode::CONFLICT);
     }
 
-    let plan = session
-        .reveal_plans
-        .get_mut(&phase)
-        .ok_or(StatusCode::INTERNAL_SERVER_ERROR)?;
-
-    if let Some(existing_hash) = &plan.submitted_tx_hash {
+    if let Some(existing_hash) = session.reveal_tx_hashes.get(&phase) {
+        let cards = session
+            .revealed_cards_by_phase
+            .get(&phase)
+            .cloned()
+            .unwrap_or_default();
+        let session_id = session
+            .reveal_session_ids
+            .get(&phase)
+            .cloned()
+            .unwrap_or_default();
         return Ok(Json(RevealResponse {
             status: "revealed".to_string(),
-            cards: plan.cards.clone(),
-            proof_size: plan.proof.len(),
-            session_id: plan.session_id.clone(),
+            cards,
+            proof_size: PROOF_BYTES,
+            session_id,
             tx_hash: Some(existing_hash.clone()),
         }));
     }
 
-    // Atomic submission rule: if on-chain submission fails, do not mutate session phase.
+    let prepared_reveal = mpc::prepare_reveal_from_nodes(
+        &state.mpc_config.node_endpoints,
+        &state.mpc_config.circuit_dir,
+        table_id,
+        &phase,
+        &session.dealt_indices,
+        &session.deck_root,
+    )
+    .await
+    .map_err(|e| {
+        tracing::error!("Reveal preparation failed: {}", e);
+        StatusCode::BAD_GATEWAY
+    })?;
+
+    let proof_session_id = next_proof_session_id(session, &format!("reveal-{}", phase));
+    let reveal_proof = mpc::generate_proof_from_share_sets(
+        table_id,
+        &prepared_reveal.share_set_ids,
+        &proof_session_id,
+        "reveal_board_valid",
+        &state.mpc_config.circuit_dir,
+        &state.mpc_config.node_endpoints,
+    )
+    .await
+    .map_err(|e| {
+        tracing::error!("Reveal proof generation failed: {}", e);
+        StatusCode::BAD_GATEWAY
+    })?;
+
+    let num_revealed = match phase.as_str() {
+        "flop" => 3usize,
+        "turn" => 1usize,
+        "river" => 1usize,
+        _ => return Err(StatusCode::BAD_REQUEST),
+    };
+    let parsed_reveal =
+        parse_reveal_outputs(&reveal_proof.public_inputs, num_revealed).map_err(|e| {
+            tracing::error!("Reveal public input parsing failed: {}", e);
+            StatusCode::BAD_GATEWAY
+        })?;
+
+    if reveal_proof.proof.len() != PROOF_BYTES {
+        tracing::error!(
+            "Reveal proof size mismatch: got {} bytes, expected {}",
+            reveal_proof.proof.len(),
+            PROOF_BYTES
+        );
+        return Err(StatusCode::BAD_GATEWAY);
+    }
+
     let tx_hash = soroban::submit_reveal_proof(
         &state.soroban_config,
         table_id,
-        &plan.proof,
-        &plan.public_inputs,
-        &plan.cards,
-        &plan.indices,
+        &reveal_proof.proof,
+        &concat_public_inputs(&reveal_proof.public_inputs),
+        &parsed_reveal.cards,
+        &parsed_reveal.indices,
     )
     .await
     .map_err(|e| {
@@ -417,23 +325,33 @@ pub async fn request_reveal(
         Some(tx_hash)
     };
 
-    session.dealt_indices.extend(plan.indices.iter().copied());
-    session.board_indices.extend(plan.indices.iter().copied());
+    session
+        .dealt_indices
+        .extend(parsed_reveal.indices.iter().copied());
+    session
+        .board_indices
+        .extend(parsed_reveal.indices.iter().copied());
     session.phase = phase.clone();
-    plan.submitted_tx_hash = tx_hash.clone();
+    if let Some(hash) = tx_hash.clone() {
+        session.reveal_tx_hashes.insert(phase.clone(), hash);
+    }
+    session
+        .reveal_session_ids
+        .insert(phase.clone(), reveal_proof.session_id.clone());
+    session
+        .revealed_cards_by_phase
+        .insert(phase.clone(), parsed_reveal.cards.clone());
 
     Ok(Json(RevealResponse {
         status: "revealed".to_string(),
-        cards: plan.cards.clone(),
-        proof_size: plan.proof.len(),
-        session_id: plan.session_id.clone(),
+        cards: parsed_reveal.cards,
+        proof_size: reveal_proof.proof.len(),
+        session_id: reveal_proof.session_id,
         tx_hash,
     }))
 }
 
 /// POST /api/table/{table_id}/request-showdown
-///
-/// Determine winner and submit pre-generated showdown proof.
 pub async fn request_showdown(
     State(state): State<AppState>,
     Path(table_id): Path<u32>,
@@ -445,6 +363,10 @@ pub async fn request_showdown(
     let auth =
         validate_signed_request(&state, &headers, table_id, "request_showdown", None).await?;
 
+    if state.mpc_config.node_endpoints.is_empty() {
+        return Err(StatusCode::SERVICE_UNAVAILABLE);
+    }
+
     let mut tables = state.tables.write().await;
     let session = tables.get_mut(&table_id).ok_or(StatusCode::NOT_FOUND)?;
 
@@ -452,28 +374,88 @@ pub async fn request_showdown(
         return Err(StatusCode::UNAUTHORIZED);
     }
 
+    if session.phase == "settlement" {
+        if let Some((winner, winner_index)) = &session.showdown_result {
+            return Ok(Json(ShowdownResponse {
+                status: "showdown_complete".to_string(),
+                winner: winner.clone(),
+                winner_index: *winner_index,
+                proof_size: PROOF_BYTES,
+                session_id: session.showdown_session_id.clone().unwrap_or_default(),
+                tx_hash: session.showdown_tx_hash.clone(),
+            }));
+        }
+        return Err(StatusCode::CONFLICT);
+    }
+
     if session.phase != "river" {
         return Err(StatusCode::CONFLICT);
     }
 
-    if let Some(existing_hash) = &session.showdown_plan.submitted_tx_hash {
-        return Ok(Json(ShowdownResponse {
-            status: "showdown_complete".to_string(),
-            winner: session.showdown_plan.winner.clone(),
-            winner_index: session.showdown_plan.winner_index,
-            proof_size: session.showdown_plan.proof.len(),
-            session_id: session.showdown_plan.session_id.clone(),
-            tx_hash: Some(existing_hash.clone()),
-        }));
+    let prepared_showdown = mpc::prepare_showdown_from_nodes(
+        &state.mpc_config.node_endpoints,
+        &state.mpc_config.circuit_dir,
+        table_id,
+        &session.board_indices,
+        session.player_order.len() as u32,
+        &session.hand_commitments,
+        &session.deck_root,
+    )
+    .await
+    .map_err(|e| {
+        tracing::error!("Showdown preparation failed: {}", e);
+        StatusCode::BAD_GATEWAY
+    })?;
+
+    let proof_session_id = next_proof_session_id(session, "showdown");
+    let showdown_proof = mpc::generate_proof_from_share_sets(
+        table_id,
+        &prepared_showdown.share_set_ids,
+        &proof_session_id,
+        "showdown_valid",
+        &state.mpc_config.circuit_dir,
+        &state.mpc_config.node_endpoints,
+    )
+    .await
+    .map_err(|e| {
+        tracing::error!("Showdown proof generation failed: {}", e);
+        StatusCode::BAD_GATEWAY
+    })?;
+
+    let parsed_showdown = parse_showdown_outputs(
+        &showdown_proof.public_inputs,
+        session.player_order.len(),
+    )
+    .map_err(|e| {
+        tracing::error!("Showdown public input parsing failed: {}", e);
+        StatusCode::BAD_GATEWAY
+    })?;
+
+    if parsed_showdown.winner_index as usize >= session.player_order.len() {
+        tracing::error!(
+            "Showdown winner index out of range: {} >= {}",
+            parsed_showdown.winner_index,
+            session.player_order.len()
+        );
+        return Err(StatusCode::BAD_GATEWAY);
+    }
+    let winner = session.player_order[parsed_showdown.winner_index as usize].clone();
+
+    if showdown_proof.proof.len() != PROOF_BYTES {
+        tracing::error!(
+            "Showdown proof size mismatch: got {} bytes, expected {}",
+            showdown_proof.proof.len(),
+            PROOF_BYTES
+        );
+        return Err(StatusCode::BAD_GATEWAY);
     }
 
-    // Atomic submission rule: if this fails, keep phase as-is.
     let tx_hash = soroban::submit_showdown_proof(
         &state.soroban_config,
         table_id,
-        &session.showdown_plan.proof,
-        &session.showdown_plan.public_inputs,
-        &session.showdown_plan.hole_cards,
+        &showdown_proof.proof,
+        &concat_public_inputs(&showdown_proof.public_inputs),
+        &parsed_showdown.hole_cards,
     )
     .await
     .map_err(|e| {
@@ -488,61 +470,32 @@ pub async fn request_showdown(
     };
 
     session.phase = "settlement".to_string();
-    session.showdown_plan.submitted_tx_hash = tx_hash.clone();
+    session.showdown_tx_hash = tx_hash.clone();
+    session.showdown_session_id = Some(showdown_proof.session_id.clone());
+    session.showdown_result = Some((winner.clone(), parsed_showdown.winner_index));
 
     Ok(Json(ShowdownResponse {
         status: "showdown_complete".to_string(),
-        winner: session.showdown_plan.winner.clone(),
-        winner_index: session.showdown_plan.winner_index,
-        proof_size: session.showdown_plan.proof.len(),
-        session_id: session.showdown_plan.session_id.clone(),
+        winner,
+        winner_index: parsed_showdown.winner_index,
+        proof_size: showdown_proof.proof.len(),
+        session_id: showdown_proof.session_id,
         tx_hash,
     }))
 }
 
 /// GET /api/table/{table_id}/player/{address}/cards
 ///
-/// Private endpoint: delivers hole cards to the authenticated player.
+/// Hole-card delivery is no longer handled by the coordinator.
 pub async fn get_player_cards(
-    State(state): State<AppState>,
-    Path((table_id, address)): Path<(u32, String)>,
-    headers: HeaderMap,
-) -> Result<Json<PlayerCardsResponse>, StatusCode> {
-    validate_table_id(table_id)?;
-
-    enforce_rate_limit(&state, &headers, table_id, "get_player_cards").await?;
-    let auth = validate_signed_request(
-        &state,
-        &headers,
-        table_id,
-        "get_player_cards",
-        Some(&address),
-    )
-    .await?;
-
-    let tables = state.tables.read().await;
-    let session = tables.get(&table_id).ok_or(StatusCode::NOT_FOUND)?;
-
-    if !session.player_order.iter().any(|p| p == &auth.address) {
-        return Err(StatusCode::UNAUTHORIZED);
-    }
-
-    let cards = session
-        .player_cards
-        .get(&address)
-        .ok_or(StatusCode::NOT_FOUND)?;
-
-    Ok(Json(PlayerCardsResponse {
-        card1: cards.card1,
-        card2: cards.card2,
-        salt1: cards.salt1.clone(),
-        salt2: cards.salt2.clone(),
-    }))
+    State(_state): State<AppState>,
+    Path((_table_id, _address)): Path<(u32, String)>,
+    _headers: HeaderMap,
+) -> StatusCode {
+    StatusCode::GONE
 }
 
 /// GET /api/table/{table_id}/state
-///
-/// Read on-chain table state via Soroban.
 pub async fn get_table_state(
     State(state): State<AppState>,
     Path(table_id): Path<u32>,
@@ -568,10 +521,132 @@ pub async fn committee_status(State(state): State<AppState>) -> Json<CommitteeSt
     })
 }
 
-fn validate_table_id(table_id: u32) -> Result<(), StatusCode> {
-    if table_id == 0 {
-        return Err(StatusCode::BAD_REQUEST);
+struct ParsedDealOutputs {
+    deck_root: String,
+    hand_commitments: Vec<String>,
+    dealt_indices: Vec<u32>,
+}
+
+struct ParsedRevealOutputs {
+    cards: Vec<u32>,
+    indices: Vec<u32>,
+}
+
+struct ParsedShowdownOutputs {
+    hole_cards: Vec<(u32, u32)>,
+    winner_index: u32,
+}
+
+fn parse_deal_outputs(public_inputs: &[String], num_players: usize) -> Result<ParsedDealOutputs, String> {
+    let needed = 1 + MAX_PLAYERS + MAX_PLAYERS + MAX_PLAYERS;
+    if public_inputs.len() < needed {
+        return Err(format!(
+            "deal public input vector too short: got {}, need at least {}",
+            public_inputs.len(),
+            needed
+        ));
     }
+
+    let start = public_inputs.len() - needed;
+    let deck_root = public_inputs[start].clone();
+    let hand_commitments = public_inputs[(start + 1)..(start + 1 + MAX_PLAYERS)].to_vec();
+
+    let dealt1_slice =
+        &public_inputs[(start + 1 + MAX_PLAYERS)..(start + 1 + 2 * MAX_PLAYERS)];
+    let dealt2_slice =
+        &public_inputs[(start + 1 + 2 * MAX_PLAYERS)..(start + 1 + 3 * MAX_PLAYERS)];
+    let dealt1 = parse_u32_slice(dealt1_slice)?;
+    let dealt2 = parse_u32_slice(dealt2_slice)?;
+
+    if num_players > MAX_PLAYERS {
+        return Err(format!("num_players {} exceeds MAX_PLAYERS {}", num_players, MAX_PLAYERS));
+    }
+
+    let mut dealt_indices = Vec::with_capacity(num_players * 2);
+    for p in 0..num_players {
+        dealt_indices.push(dealt1[p]);
+        dealt_indices.push(dealt2[p]);
+    }
+
+    Ok(ParsedDealOutputs {
+        deck_root,
+        hand_commitments: hand_commitments[..num_players].to_vec(),
+        dealt_indices,
+    })
+}
+
+fn parse_reveal_outputs(
+    public_inputs: &[String],
+    num_revealed: usize,
+) -> Result<ParsedRevealOutputs, String> {
+    const MAX_REVEAL: usize = 3;
+    let needed = MAX_REVEAL + MAX_REVEAL;
+    if public_inputs.len() < needed {
+        return Err(format!(
+            "reveal public input vector too short: got {}, need at least {}",
+            public_inputs.len(),
+            needed
+        ));
+    }
+    if num_revealed > MAX_REVEAL {
+        return Err(format!(
+            "num_revealed {} exceeds MAX_REVEAL {}",
+            num_revealed, MAX_REVEAL
+        ));
+    }
+
+    let start = public_inputs.len() - needed;
+    let cards_all = parse_u32_slice(&public_inputs[start..(start + MAX_REVEAL)])?;
+    let indices_all = parse_u32_slice(&public_inputs[(start + MAX_REVEAL)..(start + 2 * MAX_REVEAL)])?;
+
+    Ok(ParsedRevealOutputs {
+        cards: cards_all[..num_revealed].to_vec(),
+        indices: indices_all[..num_revealed].to_vec(),
+    })
+}
+
+fn parse_showdown_outputs(
+    public_inputs: &[String],
+    num_players: usize,
+) -> Result<ParsedShowdownOutputs, String> {
+    let needed = MAX_PLAYERS + MAX_PLAYERS + 1;
+    if public_inputs.len() < needed {
+        return Err(format!(
+            "showdown public input vector too short: got {}, need at least {}",
+            public_inputs.len(),
+            needed
+        ));
+    }
+    if num_players > MAX_PLAYERS {
+        return Err(format!("num_players {} exceeds MAX_PLAYERS {}", num_players, MAX_PLAYERS));
+    }
+
+    let start = public_inputs.len() - needed;
+    let hole1 = parse_u32_slice(&public_inputs[start..(start + MAX_PLAYERS)])?;
+    let hole2 =
+        parse_u32_slice(&public_inputs[(start + MAX_PLAYERS)..(start + 2 * MAX_PLAYERS)])?;
+    let winner_index = parse_single_u32(&public_inputs[start + 2 * MAX_PLAYERS])?;
+
+    let hole_cards = (0..num_players)
+        .map(|i| (hole1[i], hole2[i]))
+        .collect::<Vec<_>>();
+
+    Ok(ParsedShowdownOutputs {
+        hole_cards,
+        winner_index,
+    })
+}
+
+fn parse_u32_slice(raw: &[String]) -> Result<Vec<u32>, String> {
+    raw.iter().map(|s| parse_single_u32(s)).collect()
+}
+
+fn parse_single_u32(raw: &str) -> Result<u32, String> {
+    raw.parse::<u32>()
+        .map_err(|e| format!("failed to parse '{}' as u32: {}", raw, e))
+}
+
+fn validate_table_id(_table_id: u32) -> Result<(), StatusCode> {
     Ok(())
 }
 
@@ -739,4 +814,20 @@ fn now_unix_secs_u64() -> Result<u64, StatusCode> {
 fn now_unix_secs_i64() -> Result<i64, StatusCode> {
     let now = now_unix_secs_u64()?;
     i64::try_from(now).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
+}
+
+fn concat_public_inputs(public_inputs: &[String]) -> Vec<u8> {
+    public_inputs
+        .iter()
+        .map(|s| s.as_bytes())
+        .collect::<Vec<_>>()
+        .concat()
+}
+
+fn next_proof_session_id(session: &mut TableSession, label: &str) -> String {
+    session.proof_nonce = session.proof_nonce.saturating_add(1);
+    format!(
+        "table-{}-{}-{}",
+        session.table_id, label, session.proof_nonce
+    )
 }

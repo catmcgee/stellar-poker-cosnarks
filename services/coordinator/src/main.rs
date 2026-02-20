@@ -1,16 +1,15 @@
 //! Stellar Poker MPC Coordinator Service
 //!
 //! This service orchestrates the MPC committee for:
-//! 1. Deck shuffling (using TACEO coNoir's REP3 MPC)
+//! 1. Distributed share preparation across all MPC nodes (coNoir split-input)
 //! 2. Proof generation (deal, reveal, showdown proofs via coNoir)
-//! 3. Private card delivery to players
-//! 4. Submitting proofs to Soroban
+//! 3. Submitting proofs to Soroban
 //!
 //! Architecture:
 //! - The coordinator receives requests from the web app
 //! - It orchestrates 3 MPC nodes running coNoir
-//! - Each node holds a secret share of the deck
-//! - No single node (or the coordinator) knows the full deck
+//! - Each node prepares only its own private witness contribution
+//! - Coordinator never sees plaintext deck/salts/hole cards
 //! - Proofs are generated collaboratively and are identical to standard
 //!   Barretenberg/UltraHonk proofs
 
@@ -24,9 +23,6 @@ use tokio::sync::RwLock;
 use tower_http::cors::CorsLayer;
 
 mod api;
-mod crypto;
-mod deck;
-mod hand_eval;
 mod mpc;
 mod soroban;
 
@@ -53,56 +49,39 @@ struct MpcConfig {
 }
 
 #[derive(Clone, Debug)]
-struct PlayerPrivateCards {
-    card1: u32,
-    card2: u32,
-    salt1: String,
-    salt2: String,
-}
-
-#[derive(Clone, Debug)]
-struct PreparedReveal {
-    cards: Vec<u32>,
-    indices: Vec<u32>,
-    proof: Vec<u8>,
-    public_inputs: Vec<u8>,
-    session_id: String,
-    submitted_tx_hash: Option<String>,
-}
-
-#[derive(Clone, Debug)]
-struct PreparedShowdown {
-    winner: String,
-    winner_index: u32,
-    hole_cards: Vec<(u32, u32)>,
-    proof: Vec<u8>,
-    public_inputs: Vec<u8>,
-    session_id: String,
-    submitted_tx_hash: Option<String>,
-}
-
-#[derive(Clone, Debug)]
 #[allow(dead_code)]
 struct TableSession {
     table_id: u32,
-    /// Public commitments posted with the deck root.
-    deck_commitments: Vec<String>,
     /// Deck Merkle root (public, posted on-chain)
     deck_root: String,
-    /// Private player hole cards + salts keyed by player address.
-    player_cards: HashMap<String, PlayerPrivateCards>,
+    /// Per-player hand commitments in seat order.
+    hand_commitments: Vec<String>,
     /// Players in deterministic seat order.
     player_order: Vec<String>,
-    /// Cards already dealt (indices)
+    /// Cards already dealt/revealed (indices).
     dealt_indices: Vec<u32>,
-    /// Board card indices
+    /// Revealed board indices.
     board_indices: Vec<u32>,
-    /// Pre-generated reveal proofs and payloads by phase.
-    reveal_plans: HashMap<String, PreparedReveal>,
-    /// Pre-generated showdown proof and payload.
-    showdown_plan: PreparedShowdown,
-    /// Current game phase
+    /// Current game phase.
     phase: String,
+    /// Last deal proof session ID.
+    deal_session_id: String,
+    /// Latest deal tx hash, if submitted.
+    deal_tx_hash: Option<String>,
+    /// Reveal tx hashes by phase.
+    reveal_tx_hashes: HashMap<String, String>,
+    /// Reveal proof session IDs by phase.
+    reveal_session_ids: HashMap<String, String>,
+    /// Revealed cards by phase.
+    revealed_cards_by_phase: HashMap<String, Vec<u32>>,
+    /// Latest showdown tx hash, if submitted.
+    showdown_tx_hash: Option<String>,
+    /// Last showdown proof session ID, if submitted.
+    showdown_session_id: Option<String>,
+    /// Cached showdown result for idempotent retries.
+    showdown_result: Option<(String, u32)>,
+    /// Monotonic nonce for unique proof session IDs.
+    proof_nonce: u64,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -153,22 +132,22 @@ async fn main() {
     let app = Router::new()
         .route("/api/health", get(health))
         .route(
-            "/api/table/{table_id}/request-deal",
+            "/api/table/:table_id/request-deal",
             post(api::request_deal),
         )
         .route(
-            "/api/table/{table_id}/request-reveal/{phase}",
+            "/api/table/:table_id/request-reveal/:phase",
             post(api::request_reveal),
         )
         .route(
-            "/api/table/{table_id}/request-showdown",
+            "/api/table/:table_id/request-showdown",
             post(api::request_showdown),
         )
         .route(
-            "/api/table/{table_id}/player/{address}/cards",
+            "/api/table/:table_id/player/:address/cards",
             get(api::get_player_cards),
         )
-        .route("/api/table/{table_id}/state", get(api::get_table_state))
+        .route("/api/table/:table_id/state", get(api::get_table_state))
         .route("/api/committee/status", get(api::committee_status))
         .layer(CorsLayer::permissive())
         .with_state(state);

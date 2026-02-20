@@ -1,67 +1,96 @@
 /// Showdown Validity Circuit
 ///
-/// Proves that the declared winner of the hand is correct given:
-/// - Each player's hole cards (revealed at showdown in v1)
-/// - The community board cards (already public)
-/// - The hand commitments (previously posted on-chain)
-///
-/// V1: Public showdown (hole cards are revealed, commitment consistency verified).
-/// V2 (future): Privacy-preserving showdown using ZK hand ranking comparison.
-///
-/// Public inputs:
-///   - hand_commitments: per-player commitments from deal phase
-///   - board_cards: 5 community cards
-///   - hole_cards + salts: revealed per-player cards (v1)
-///   - winner_index: claimed winner
-///
-/// The circuit verifies:
-///   1. Revealed cards match the original commitments
-///   2. Hand evaluation is correct
-///   3. Winner has the best hand
+/// Derives hole cards from shared deck contributions, verifies commitments,
+/// evaluates all active hands, and outputs the winner index.
 
 use stellar_poker_lib::cards;
 use stellar_poker_lib::commitments;
+use stellar_poker_lib::merkle;
+use stellar_poker_lib::shuffle;
 
 global MAX_PLAYERS: u32 = 6;
 
 fn main(
+    // Private inputs (secret-shared in MPC)
+    party0_permutation: [u32; 52],
+    party1_permutation: [u32; 52],
+    party2_permutation: [u32; 52],
+    party0_salts: [Field; 52],
+    party1_salts: [Field; 52],
+    party2_salts: [Field; 52],
+
     // Public inputs
     num_active_players: pub u32,
     hand_commitments: pub [Field; MAX_PLAYERS],
-    board_cards: pub [u32; 5],
-    hole_card1: pub [u32; MAX_PLAYERS],
-    hole_card2: pub [u32; MAX_PLAYERS],
-    salts1: pub [Field; MAX_PLAYERS],
-    salts2: pub [Field; MAX_PLAYERS],
-    winner_index: pub u32,
-) {
-    assert(num_active_players >= 2, "need at least 2 players for showdown");
-    assert(winner_index < num_active_players, "winner index out of range");
+    board_indices: pub [u32; 5],
+    deck_root: pub Field,
+) -> pub ([u32; MAX_PLAYERS], [u32; MAX_PLAYERS], u32) {
+    assert(num_active_players >= 2, "need at least 2 players");
+    assert(num_active_players <= MAX_PLAYERS, "too many active players");
 
-    // 1. Verify all board cards are valid
+    let (deck, salts) = shuffle::derive_shared_deck_and_salts(
+        party0_permutation,
+        party1_permutation,
+        party2_permutation,
+        party0_salts,
+        party1_salts,
+        party2_salts,
+    );
+
+    // 1. Recompute deck root and verify consistency with deal/reveal phases.
+    let mut leaves: [Field; 64] = [0; 64];
+    for i in 0..52 {
+        leaves[i] = commitments::commit_card(deck[i], salts[i]);
+    }
+    let computed_root = merkle::compute_merkle_root(leaves);
+    assert(computed_root == deck_root, "deck root mismatch");
+
+    // 2. Resolve board cards and check index uniqueness against dealt cards.
+    let mut used_indices: [bool; 52] = [false; 52];
+    for p in 0..MAX_PLAYERS {
+        if p < num_active_players {
+            let idx1 = p * 2;
+            let idx2 = idx1 + 1;
+            assert(idx2 < 52, "hole card index out of range");
+            assert(!used_indices[idx1], "duplicate dealt index");
+            used_indices[idx1] = true;
+            assert(!used_indices[idx2], "duplicate dealt index");
+            used_indices[idx2] = true;
+        }
+    }
+
+    let mut board_cards: [u32; 5] = [0; 5];
     for i in 0..5 {
+        let idx = board_indices[i];
+        assert(idx < 52, "board index out of range");
+        assert(!used_indices[idx], "board index already used");
+        used_indices[idx] = true;
+
+        board_cards[i] = deck[idx] as u32;
         cards::assert_valid_card(board_cards[i] as Field);
     }
 
-    // 2. For each active player, verify commitment and evaluate hand
+    // 3. Verify per-player commitments and evaluate hand ranks.
+    let mut hole_card1: [u32; MAX_PLAYERS] = [0; MAX_PLAYERS];
+    let mut hole_card2: [u32; MAX_PLAYERS] = [0; MAX_PLAYERS];
     let mut hand_scores: [u32; MAX_PLAYERS] = [0; MAX_PLAYERS];
 
     for p in 0..MAX_PLAYERS {
         if p < num_active_players {
-            // Verify card validity
+            let idx1 = p * 2;
+            let idx2 = idx1 + 1;
+
+            hole_card1[p] = deck[idx1] as u32;
+            hole_card2[p] = deck[idx2] as u32;
+
             cards::assert_valid_card(hole_card1[p] as Field);
             cards::assert_valid_card(hole_card2[p] as Field);
 
-            // Verify hand commitment matches
-            let c1_commit = commitments::commit_card(hole_card1[p] as Field, salts1[p]);
-            let c2_commit = commitments::commit_card(hole_card2[p] as Field, salts2[p]);
+            let c1_commit = commitments::commit_card(deck[idx1], salts[idx1]);
+            let c2_commit = commitments::commit_card(deck[idx2], salts[idx2]);
             let expected_commit = commitments::commit_hand(c1_commit, c2_commit);
-            assert(
-                expected_commit == hand_commitments[p],
-                "hand commitment mismatch at showdown",
-            );
+            assert(expected_commit == hand_commitments[p], "hand commitment mismatch");
 
-            // Evaluate hand (2 hole + 5 board = 7 cards)
             let seven_cards: [u32; 7] = [
                 hole_card1[p],
                 hole_card2[p],
@@ -71,21 +100,27 @@ fn main(
                 board_cards[3],
                 board_cards[4],
             ];
-
             hand_scores[p] = cards::evaluate_hand_rank(seven_cards);
         }
     }
 
-    // 3. Verify the declared winner has the highest hand score
-    let winner_score = hand_scores[winner_index];
+    // 4. Compute winner as first seat with maximal score.
+    let mut winner_index: u32 = 0;
+    let mut winner_score: u32 = 0;
+    for p in 0..MAX_PLAYERS {
+        if p < num_active_players {
+            if (p == 0) | (hand_scores[p] > winner_score) {
+                winner_index = p;
+                winner_score = hand_scores[p];
+            }
+        }
+    }
 
     for p in 0..MAX_PLAYERS {
         if p < num_active_players {
-            // Winner's score must be >= all other scores
-            assert(
-                winner_score >= hand_scores[p],
-                "declared winner doesn't have the best hand",
-            );
+            assert(winner_score >= hand_scores[p], "declared winner is not maximal");
         }
     }
+
+    (hole_card1, hole_card2, winner_index)
 }
