@@ -30,6 +30,11 @@ export interface TableStateResponse {
   state: string;
 }
 
+export interface ParsedTableStateResponse {
+  raw: string;
+  parsed: Record<string, unknown> | null;
+}
+
 export interface PlayerCardsResponse {
   card1: number;
   card2: number;
@@ -49,6 +54,21 @@ export interface AuthSigner {
 }
 
 let lastNonce = 0;
+
+async function readApiError(res: Response, fallback: string): Promise<string> {
+  try {
+    const text = await res.text();
+    if (!text) return fallback;
+    try {
+      const json = JSON.parse(text) as { error?: string; message?: string };
+      return json.error || json.message || text;
+    } catch {
+      return text;
+    }
+  } catch {
+    return fallback;
+  }
+}
 
 function nextNonce(): string {
   const now = Date.now() * 1000;
@@ -103,7 +123,9 @@ export async function requestDeal(
     },
     body: JSON.stringify({ players }),
   });
-  if (!res.ok) throw new Error(`Deal failed: ${res.status}`);
+  if (!res.ok) {
+    throw new Error(await readApiError(res, `Deal failed: ${res.status}`));
+  }
   return res.json();
 }
 
@@ -122,7 +144,9 @@ export async function requestReveal(
     method: "POST",
     headers,
   });
-  if (!res.ok) throw new Error(`Reveal failed: ${res.status}`);
+  if (!res.ok) {
+    throw new Error(await readApiError(res, `Reveal failed: ${res.status}`));
+  }
   return res.json();
 }
 
@@ -136,7 +160,9 @@ export async function requestShowdown(
     method: "POST",
     headers,
   });
-  if (!res.ok) throw new Error(`Showdown failed: ${res.status}`);
+  if (!res.ok) {
+    throw new Error(await readApiError(res, `Showdown failed: ${res.status}`));
+  }
   return res.json();
 }
 
@@ -150,7 +176,9 @@ export async function getPlayerCards(
   const res = await fetch(`${API_BASE}/api/table/${tableId}/player/${address}/cards`, {
     headers,
   });
-  if (!res.ok) throw new Error(`Failed to get cards: ${res.status}`);
+  if (!res.ok) {
+    throw new Error(await readApiError(res, `Failed to get cards: ${res.status}`));
+  }
   return res.json();
 }
 
@@ -158,8 +186,24 @@ export async function getTableState(
   tableId: number
 ): Promise<TableStateResponse> {
   const res = await fetch(`${API_BASE}/api/table/${tableId}/state`);
-  if (!res.ok) throw new Error(`Failed to get table state: ${res.status}`);
+  if (!res.ok) {
+    throw new Error(await readApiError(res, `Failed to get table state: ${res.status}`));
+  }
   return res.json();
+}
+
+export async function getParsedTableState(
+  tableId: number
+): Promise<ParsedTableStateResponse> {
+  const result = await getTableState(tableId);
+  try {
+    return {
+      raw: result.state,
+      parsed: JSON.parse(result.state) as Record<string, unknown>,
+    };
+  } catch {
+    return { raw: result.state, parsed: null };
+  }
 }
 
 export async function getCommitteeStatus(): Promise<CommitteeStatusResponse> {

@@ -11,7 +11,7 @@ export default function TablePage({
   const { id } = use(params);
   const tableId = parseInt(id, 10);
 
-  if (isNaN(tableId) || tableId < 1) {
+  if (isNaN(tableId) || tableId < 0) {
     return (
       <div className="min-h-screen flex items-center justify-center text-red-400">
         Invalid table ID

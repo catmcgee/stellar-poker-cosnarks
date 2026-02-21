@@ -20,6 +20,10 @@ pub struct SorobanConfig {
     pub poker_table_contract: String,
     pub network_passphrase: String,
     pub onchain_table_id: Option<u32>,
+    pub player1_address: Option<String>,
+    pub player2_address: Option<String>,
+    pub player1_identity: String,
+    pub player2_identity: String,
 }
 
 impl SorobanConfig {
@@ -36,8 +40,13 @@ impl SorobanConfig {
             onchain_table_id: std::env::var("ONCHAIN_TABLE_ID")
                 .ok()
                 .or_else(|| std::env::var("TABLE_ID").ok())
-                .and_then(|s| s.parse().ok())
-                ,
+                .and_then(|s| s.parse().ok()),
+            player1_address: std::env::var("PLAYER1_ADDRESS").ok(),
+            player2_address: std::env::var("PLAYER2_ADDRESS").ok(),
+            player1_identity: std::env::var("PLAYER1_IDENTITY")
+                .unwrap_or_else(|_| "player1-local".to_string()),
+            player2_identity: std::env::var("PLAYER2_IDENTITY")
+                .unwrap_or_else(|_| "player2-local".to_string()),
         }
     }
 
@@ -52,6 +61,18 @@ impl SorobanConfig {
         let signing_key = SigningKey::from_bytes(&sk.0);
         let public_key = signing_key.verifying_key().to_bytes();
         Ok(stellar_strkey::ed25519::PublicKey(public_key).to_string())
+    }
+
+    fn identity_for_player(&self, player_address: &str) -> Option<&str> {
+        match (
+            self.player1_address.as_deref(),
+            self.player2_address.as_deref(),
+            player_address,
+        ) {
+            (Some(p1), _, player) if p1 == player => Some(self.player1_identity.as_str()),
+            (_, Some(p2), player) if p2 == player => Some(self.player2_identity.as_str()),
+            _ => None,
+        }
     }
 }
 
@@ -117,6 +138,130 @@ async fn invoke_contract_with_retries(
 
 fn resolve_onchain_table_id(config: &SorobanConfig, table_id: u32) -> u32 {
     config.onchain_table_id.unwrap_or(table_id)
+}
+
+async fn invoke_contract_with_source(
+    config: &SorobanConfig,
+    source: &str,
+    contract_args: Vec<String>,
+) -> Result<std::process::Output, String> {
+    let mut args: Vec<String> = vec![
+        "contract".to_string(),
+        "invoke".to_string(),
+        "--id".to_string(),
+        config.poker_table_contract.clone(),
+        "--source".to_string(),
+        source.to_string(),
+        "--rpc-url".to_string(),
+        config.rpc_url.clone(),
+        "--network-passphrase".to_string(),
+        config.network_passphrase.clone(),
+        "--".to_string(),
+    ];
+    args.extend(contract_args);
+
+    Command::new("stellar")
+        .args(&args)
+        .output()
+        .await
+        .map_err(|e| format!("Failed to invoke stellar CLI: {}", e))
+}
+
+fn parse_i128_value(value: &serde_json::Value) -> Option<i128> {
+    match value {
+        serde_json::Value::String(s) => s.parse::<i128>().ok(),
+        serde_json::Value::Number(n) => n.as_i64().map(|v| v as i128),
+        _ => None,
+    }
+}
+
+/// When reveal is requested directly from the frontend, advance one legal betting
+/// action if the on-chain table is still in a betting phase.
+pub async fn maybe_auto_advance_betting_for_reveal(
+    config: &SorobanConfig,
+    table_id: u32,
+    reveal_phase: &str,
+) -> Result<(), String> {
+    if !config.is_configured() {
+        return Ok(());
+    }
+
+    let state_raw = get_table_state(config, table_id).await?;
+    let state: serde_json::Value = serde_json::from_str(&state_raw)
+        .map_err(|e| format!("failed to parse on-chain table state: {}", e))?;
+
+    let phase = state
+        .get("phase")
+        .and_then(|v| v.as_str())
+        .ok_or("missing phase in on-chain table state")?;
+
+    let expected = match reveal_phase {
+        "flop" => "Preflop",
+        "turn" => "Flop",
+        "river" => "Turn",
+        _ => return Ok(()),
+    };
+
+    if phase != expected {
+        return Ok(());
+    }
+
+    let players = state
+        .get("players")
+        .and_then(|v| v.as_array())
+        .ok_or("missing players in on-chain table state")?;
+    let current_turn = state
+        .get("current_turn")
+        .and_then(|v| v.as_u64())
+        .ok_or("missing current_turn in on-chain table state")? as usize;
+
+    let current_player = players
+        .get(current_turn)
+        .ok_or("current_turn out of range for on-chain players")?;
+    let player_address = current_player
+        .get("address")
+        .and_then(|v| v.as_str())
+        .ok_or("missing current player address")?;
+    let source_identity = config
+        .identity_for_player(player_address)
+        .ok_or_else(|| format!("no local identity configured for player {}", player_address))?;
+
+    let current_bet = players
+        .iter()
+        .filter_map(|p| p.get("bet_this_round"))
+        .filter_map(parse_i128_value)
+        .max()
+        .unwrap_or(0);
+    let my_bet = current_player
+        .get("bet_this_round")
+        .and_then(parse_i128_value)
+        .unwrap_or(0);
+
+    let action_json = if my_bet < current_bet { "\"Call\"" } else { "\"Check\"" };
+    let onchain_table_id = resolve_onchain_table_id(config, table_id);
+    tracing::info!(
+        "Auto-advancing betting before reveal: phase={}, action={}, player={}",
+        phase,
+        action_json,
+        player_address
+    );
+
+    let output = invoke_contract_with_source(
+        config,
+        source_identity,
+        vec![
+            "player_action".to_string(),
+            "--table_id".to_string(),
+            onchain_table_id.to_string(),
+            "--player".to_string(),
+            player_address.to_string(),
+            "--action".to_string(),
+            action_json.to_string(),
+        ],
+    )
+    .await?;
+
+    parse_tx_result(output).map(|_| ())
 }
 
 /// Submit a deal proof to the on-chain poker-table contract via `commit_deal`.

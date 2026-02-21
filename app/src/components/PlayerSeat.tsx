@@ -9,6 +9,7 @@ interface PlayerSeatProps {
   isCurrentTurn: boolean;
   isDealer: boolean;
   isUser: boolean;
+  isWinner?: boolean;
 }
 
 const SEAT_CATS: Array<{ variant: "grey" | "orange" | "black"; flipped?: boolean }> = [
@@ -22,118 +23,105 @@ export function PlayerSeat({
   isCurrentTurn,
   isDealer,
   isUser,
+  isWinner = false,
 }: PlayerSeatProps) {
   const catConfig = SEAT_CATS[player.seat % SEAT_CATS.length];
 
+  const cardSize = isUser ? "md" : "sm";
+
   return (
     <div
-      className="pixel-border-thin relative flex flex-col items-center gap-2 p-3"
+      className="relative flex flex-col items-center gap-1"
       style={{
-        background: player.folded
-          ? 'rgba(20, 12, 8, 0.5)'
-          : 'var(--ui-panel)',
-        opacity: player.folded ? 0.6 : 1,
-        minWidth: '130px',
-        borderColor: isCurrentTurn ? '#f1c40f' : undefined,
+        opacity: player.folded ? 0.5 : 1,
       }}
     >
-      {/* Dealer chip */}
-      {isDealer && (
-        <div className="absolute -top-3 -left-3 z-10" style={{
-          width: '20px',
-          height: '20px',
-          background: '#f1c40f',
-          border: '2px solid #b7950b',
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'center',
-          fontSize: '7px',
-          color: '#3d2400',
-          boxShadow: '0 2px 0 0 #8a7000',
-        }}>
-          D
-        </div>
-      )}
-
       {/* Turn indicator */}
       {isCurrentTurn && !player.folded && (
-        <div className="absolute -top-2 left-1/2 -translate-x-1/2" style={{
+        <div style={{
           animation: 'textPulse 1s ease-in-out infinite',
-          fontSize: '6px',
+          fontSize: '7px',
           color: '#f1c40f',
           textShadow: '1px 1px 0 rgba(0,0,0,0.6)',
           whiteSpace: 'nowrap',
+          marginBottom: '2px',
         }}>
-          YOUR TURN
+          {isUser ? "▼ YOUR TURN ▼" : "▼ THEIR TURN ▼"}
         </div>
       )}
 
-      {/* Cat avatar + cards row */}
-      <div className="flex items-end gap-2">
-        {/* Cat avatar */}
-        <div className="flex-shrink-0">
-          <PixelCat
-            variant={catConfig.variant}
-            size={isUser ? 5 : 4}
-            flipped={catConfig.flipped}
-          />
-        </div>
-
-        {/* Cards */}
-        <div className="flex gap-1">
-          {player.cards ? (
-            <>
-              <Card value={player.cards[0]} size="sm" faceDown={!isUser} />
-              <Card value={player.cards[1]} size="sm" faceDown={!isUser} />
-            </>
-          ) : (
-            <>
-              <Card faceDown size="sm" />
-              <Card faceDown size="sm" />
-            </>
-          )}
-        </div>
-      </div>
-
-      {/* Player info */}
-      <div className="text-center w-full">
-        <div className="text-[7px] truncate" style={{
-          color: isUser ? '#f1c40f' : '#bdc3c7',
-          maxWidth: '120px',
+      {/* Winner badge */}
+      {isWinner && (
+        <div style={{
+          fontSize: "7px",
+          color: "#f1c40f",
+          textShadow: "1px 1px 0 rgba(0,0,0,0.6)",
+          marginBottom: '2px',
         }}>
-          {isUser ? "YOU" : `${player.address.slice(0, 6)}...`}
+          ★ WINNER ★
         </div>
+      )}
 
-        {/* Stack with pixel coin icon */}
-        <div className="flex items-center justify-center gap-1 mt-1">
-          <span className="text-[8px]" style={{
-            color: '#27ae60',
-            textShadow: '1px 1px 0 rgba(0,0,0,0.4)',
-          }}>
-            {player.stack.toLocaleString()} XLM
-          </span>
-        </div>
+      {/* Label */}
+      <div className="text-[7px] mb-1" style={{
+        color: isUser ? '#f1c40f' : '#95a5a6',
+        textShadow: '1px 1px 0 rgba(0,0,0,0.5)',
+      }}>
+        {isUser ? "— YOU —" : `${player.address.slice(0, 6)}...`}
+        {isDealer && <span style={{ color: '#f1c40f', marginLeft: '4px' }}>[D]</span>}
+      </div>
 
-        {/* Bet */}
-        {player.betThisRound > 0 && (
-          <div className="text-[7px] mt-0.5" style={{ color: '#f1c40f' }}>
-            BET: {player.betThisRound}
-          </div>
-        )}
+      {/* Cat avatar */}
+      <div style={{ marginBottom: '4px' }}>
+        <PixelCat
+          variant={catConfig.variant}
+          size={isUser ? 6 : 4}
+          flipped={catConfig.flipped}
+        />
+      </div>
 
-        {/* Status tags */}
-        {player.folded && (
-          <div className="text-[7px] mt-0.5" style={{ color: '#e74c3c' }}>FOLDED</div>
-        )}
-        {player.allIn && (
-          <div className="text-[7px] mt-0.5" style={{
-            color: '#e67e22',
-            animation: 'textPulse 0.8s ease-in-out infinite',
-          }}>
-            ALL IN!
-          </div>
+      {/* Cards */}
+      <div className="flex gap-1">
+        {player.cards ? (
+          <>
+            <Card value={player.cards[0]} size={cardSize} faceDown={!isUser} />
+            <Card value={player.cards[1]} size={cardSize} faceDown={!isUser} />
+          </>
+        ) : (
+          <>
+            <Card faceDown size={cardSize} />
+            <Card faceDown size={cardSize} />
+          </>
         )}
       </div>
+
+      {/* Stack */}
+      <div className="text-[8px] mt-1" style={{
+        color: '#27ae60',
+        textShadow: '1px 1px 0 rgba(0,0,0,0.4)',
+      }}>
+        {player.stack.toLocaleString()} XLM
+      </div>
+
+      {/* Bet */}
+      {player.betThisRound > 0 && (
+        <div className="text-[7px]" style={{ color: '#f1c40f' }}>
+          BET: {player.betThisRound}
+        </div>
+      )}
+
+      {/* Status tags */}
+      {player.folded && (
+        <div className="text-[7px]" style={{ color: '#e74c3c' }}>FOLDED</div>
+      )}
+      {player.allIn && (
+        <div className="text-[7px]" style={{
+          color: '#e67e22',
+          animation: 'textPulse 0.8s ease-in-out infinite',
+        }}>
+          ALL IN!
+        </div>
+      )}
     </div>
   );
 }

@@ -11,6 +11,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use tokio::process::Command;
+use tokio::time::{sleep, Duration};
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub enum SessionStatus {
@@ -215,37 +216,65 @@ pub async fn run_proof_generation(
 
     // Step 2: Build and generate proof in MPC
     let vk_path = format!("{}/{}/target/vk_keccak", circuit_dir, circuit_name);
-    let proof_output = Command::new("co-noir")
-        .arg("build-and-generate-proof")
-        .arg("--circuit")
-        .arg(&circuit_path)
-        .arg("--witness")
-        .arg(&witness_path)
-        .arg("--protocol")
-        .arg("REP3")
-        .arg("--config")
-        .arg(&party_config_path)
-        .arg("--crs")
-        .arg(&crs_file)
-        .arg("--hasher")
-        .arg("keccak")
-        .arg("--vk")
-        .arg(&vk_path)
-        .arg("--out")
-        .arg(&proof_path)
-        .arg("--public-input")
-        .arg(&public_inputs_path)
-        .arg("--fields-as-json")
-        .output()
-        .await
-        .map_err(|e| format!("failed to spawn co-noir build-and-generate-proof: {}", e))?;
+    let mut last_proof_output: Option<std::process::Output> = None;
+    for attempt in 1..=3 {
+        let proof_output = Command::new("co-noir")
+            .arg("build-and-generate-proof")
+            .arg("--circuit")
+            .arg(&circuit_path)
+            .arg("--witness")
+            .arg(&witness_path)
+            .arg("--protocol")
+            .arg("REP3")
+            .arg("--config")
+            .arg(&party_config_path)
+            .arg("--crs")
+            .arg(&crs_file)
+            .arg("--hasher")
+            .arg("keccak")
+            .arg("--vk")
+            .arg(&vk_path)
+            .arg("--out")
+            .arg(&proof_path)
+            .arg("--public-input")
+            .arg(&public_inputs_path)
+            .arg("--fields-as-json")
+            .output()
+            .await
+            .map_err(|e| format!("failed to spawn co-noir build-and-generate-proof: {}", e))?;
 
-    if !proof_output.status.success() {
+        if proof_output.status.success() {
+            last_proof_output = Some(proof_output);
+            break;
+        }
+
         let stderr = String::from_utf8_lossy(&proof_output.stderr);
+        let is_transient_resource_error = stderr.contains("No buffer space available")
+            || stderr.contains("os error 55");
+
+        if is_transient_resource_error && attempt < 3 {
+            tracing::warn!(
+                "[{}] co-noir build-and-generate-proof transient failure on node {} (attempt {}/3): {}",
+                session_id,
+                node_id,
+                attempt,
+                stderr.trim()
+            );
+            sleep(Duration::from_millis((attempt as u64) * 500)).await;
+            continue;
+        }
+
         let stdout = String::from_utf8_lossy(&proof_output.stdout);
         return Err(format!(
             "co-noir build-and-generate-proof failed (node {}):\nstderr: {}\nstdout: {}",
             node_id, stderr, stdout
+        ));
+    }
+
+    if last_proof_output.is_none() {
+        return Err(format!(
+            "co-noir build-and-generate-proof failed after retries (node {})",
+            node_id
         ));
     }
 

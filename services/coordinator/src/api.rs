@@ -8,6 +8,7 @@ use axum::{
 use base64::Engine;
 use ed25519_dalek::{Signature, Verifier, VerifyingKey};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
 use std::time::{SystemTime, UNIX_EPOCH};
 use uuid::Uuid;
@@ -229,6 +230,8 @@ pub async fn request_reveal(
         return Err(StatusCode::SERVICE_UNAVAILABLE);
     }
 
+    ensure_session_exists(&state, table_id).await?;
+
     let mut tables = state.tables.write().await;
     let session = tables.get_mut(&table_id).ok_or(StatusCode::NOT_FOUND)?;
 
@@ -264,6 +267,19 @@ pub async fn request_reveal(
             session_id,
             tx_hash: Some(existing_hash.clone()),
         }));
+    }
+
+    if state.soroban_config.is_configured() {
+        soroban::maybe_auto_advance_betting_for_reveal(&state.soroban_config, table_id, &phase)
+            .await
+            .map_err(|e| {
+                tracing::error!(
+                    "Failed to auto-advance betting before reveal (phase={}): {}",
+                    phase,
+                    e
+                );
+                StatusCode::BAD_GATEWAY
+            })?;
     }
 
     let prepared_reveal = mpc::prepare_reveal_from_nodes(
@@ -370,6 +386,8 @@ pub async fn request_showdown(
     if state.mpc_config.node_endpoints.is_empty() {
         return Err(StatusCode::SERVICE_UNAVAILABLE);
     }
+
+    ensure_session_exists(&state, table_id).await?;
 
     let mut tables = state.tables.write().await;
     let session = tables.get_mut(&table_id).ok_or(StatusCode::NOT_FOUND)?;
@@ -495,6 +513,8 @@ pub async fn get_player_cards(
         validate_signed_request(&state, &headers, table_id, "get_player_cards", Some(&address))
             .await?;
 
+    ensure_session_exists(&state, table_id).await?;
+
     let tables = state.tables.read().await;
     let session = tables.get(&table_id).ok_or(StatusCode::NOT_FOUND)?;
 
@@ -560,6 +580,200 @@ pub async fn committee_status(State(state): State<AppState>) -> Json<CommitteeSt
         healthy,
         status: "active".to_string(),
     })
+}
+
+async fn ensure_session_exists(state: &AppState, table_id: u32) -> Result<(), StatusCode> {
+    {
+        let tables = state.tables.read().await;
+        if tables.contains_key(&table_id) {
+            return Ok(());
+        }
+    }
+
+    if !state.soroban_config.is_configured() {
+        return Err(StatusCode::NOT_FOUND);
+    }
+
+    let raw_state = soroban::get_table_state(&state.soroban_config, table_id)
+        .await
+        .map_err(|e| {
+            tracing::warn!(
+                "failed to fetch on-chain table {} for session rehydrate: {}",
+                table_id,
+                e
+            );
+            StatusCode::SERVICE_UNAVAILABLE
+        })?;
+
+    let restored = build_session_from_onchain_state(table_id, &raw_state).map_err(|e| {
+        tracing::warn!(
+            "failed to rehydrate table {} from on-chain state: {}",
+            table_id,
+            e
+        );
+        StatusCode::NOT_FOUND
+    })?;
+
+    let mut tables = state.tables.write().await;
+    tables.entry(table_id).or_insert(restored);
+    Ok(())
+}
+
+fn build_session_from_onchain_state(table_id: u32, raw_state: &str) -> Result<TableSession, String> {
+    let value: serde_json::Value =
+        serde_json::from_str(raw_state).map_err(|e| format!("invalid table json: {}", e))?;
+
+    let phase_raw = value
+        .get("phase")
+        .and_then(|v| v.as_str())
+        .ok_or("missing phase")?;
+    let phase = map_onchain_phase_to_local(phase_raw)
+        .ok_or_else(|| format!("unsupported on-chain phase '{}'", phase_raw))?;
+
+    let mut seated: Vec<(u32, String)> = value
+        .get("players")
+        .and_then(|v| v.as_array())
+        .ok_or("missing players")?
+        .iter()
+        .filter_map(|player| {
+            let address = player.get("address")?.as_str()?.to_string();
+            let seat = player
+                .get("seat_index")
+                .and_then(parse_u32_value)
+                .unwrap_or(0);
+            Some((seat, address))
+        })
+        .collect();
+    seated.sort_by_key(|(seat, _)| *seat);
+    let player_order: Vec<String> = seated.into_iter().map(|(_, address)| address).collect();
+
+    if player_order.len() < MIN_PLAYERS {
+        return Err(format!(
+            "not enough seated players to restore session: {}",
+            player_order.len()
+        ));
+    }
+
+    let deck_root = value
+        .get("deck_root")
+        .and_then(|v| v.as_str())
+        .unwrap_or_default()
+        .to_string();
+
+    if phase != "waiting" && phase != "dealing" && deck_root.is_empty() {
+        return Err("missing deck_root for active hand".to_string());
+    }
+
+    let hand_commitments: Vec<String> = value
+        .get("hand_commitments")
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|item| item.as_str().map(|s| s.to_string()))
+                .collect()
+        })
+        .unwrap_or_default();
+
+    let board_cards: Vec<u32> = value
+        .get("board_cards")
+        .and_then(|v| v.as_array())
+        .map(|arr| arr.iter().filter_map(parse_u32_value).collect())
+        .unwrap_or_default();
+    let board_count = board_cards.len();
+
+    let mut hole_indices = Vec::with_capacity(player_order.len() * 2);
+    let mut player_card_positions = Vec::with_capacity(player_order.len());
+    for seat in 0..player_order.len() {
+        let c1 = (seat * 2) as u32;
+        let c2 = c1 + 1;
+        player_card_positions.push((c1, c2));
+        hole_indices.push(c1);
+        hole_indices.push(c2);
+    }
+
+    let chain_dealt_indices: Vec<u32> = value
+        .get("dealt_indices")
+        .and_then(|v| v.as_array())
+        .map(|arr| arr.iter().filter_map(parse_u32_value).collect())
+        .unwrap_or_default();
+
+    let board_indices = if chain_dealt_indices.is_empty() {
+        let start = (player_order.len() * 2) as u32;
+        (0..board_count).map(|i| start + i as u32).collect::<Vec<u32>>()
+    } else if chain_dealt_indices.len() >= hole_indices.len() + board_count {
+        chain_dealt_indices[chain_dealt_indices.len() - board_count..].to_vec()
+    } else {
+        chain_dealt_indices.clone()
+    };
+
+    let dealt_indices = if chain_dealt_indices.is_empty() {
+        let mut combined = hole_indices.clone();
+        combined.extend(board_indices.iter().copied());
+        combined
+    } else if chain_dealt_indices.len() >= hole_indices.len() {
+        chain_dealt_indices
+    } else {
+        let mut combined = hole_indices.clone();
+        combined.extend(chain_dealt_indices.iter().copied());
+        combined
+    };
+
+    let mut revealed_cards_by_phase = HashMap::new();
+    if board_cards.len() >= 3 {
+        revealed_cards_by_phase.insert("flop".to_string(), board_cards[0..3].to_vec());
+    }
+    if board_cards.len() >= 4 {
+        revealed_cards_by_phase.insert("turn".to_string(), vec![board_cards[3]]);
+    }
+    if board_cards.len() >= 5 {
+        revealed_cards_by_phase.insert("river".to_string(), vec![board_cards[4]]);
+    }
+
+    Ok(TableSession {
+        table_id,
+        deck_root,
+        hand_commitments,
+        player_order,
+        dealt_indices,
+        player_card_positions,
+        board_indices,
+        phase: phase.to_string(),
+        deal_session_id: "rehydrated-from-chain".to_string(),
+        deal_tx_hash: None,
+        reveal_tx_hashes: HashMap::new(),
+        reveal_session_ids: HashMap::new(),
+        revealed_cards_by_phase,
+        showdown_tx_hash: None,
+        showdown_session_id: None,
+        showdown_result: None,
+        proof_nonce: 0,
+    })
+}
+
+fn parse_u32_value(value: &serde_json::Value) -> Option<u32> {
+    if let Some(v) = value.as_u64() {
+        return u32::try_from(v).ok();
+    }
+    value
+        .as_str()
+        .and_then(|s| s.parse::<u32>().ok())
+}
+
+fn map_onchain_phase_to_local(phase: &str) -> Option<&'static str> {
+    match phase {
+        "Waiting" => Some("waiting"),
+        "Dealing" => Some("dealing"),
+        "Preflop" => Some("preflop"),
+        "DealingFlop" => Some("preflop"),
+        "Flop" => Some("flop"),
+        "DealingTurn" => Some("flop"),
+        "Turn" => Some("turn"),
+        "DealingRiver" => Some("turn"),
+        "River" => Some("river"),
+        "Showdown" => Some("settlement"),
+        "Settlement" => Some("settlement"),
+        _ => None,
+    }
 }
 
 struct ParsedDealOutputs {
@@ -791,8 +1005,21 @@ fn verify_signature(address: &str, message: &str, signature_raw: &str) -> Result
         VerifyingKey::from_bytes(&stellar_pk.0).map_err(|_| StatusCode::UNAUTHORIZED)?;
 
     let signature = decode_signature(signature_raw)?;
+
+    // Backward compatible mode for older signers that sign raw message bytes directly.
+    if verifying_key.verify(message.as_bytes(), &signature).is_ok() {
+        return Ok(());
+    }
+
+    // Freighter modern signMessage follows SEP-53:
+    // signature over SHA256("Stellar Signed Message:\n" + message).
+    let mut hasher = Sha256::new();
+    hasher.update(b"Stellar Signed Message:\n");
+    hasher.update(message.as_bytes());
+    let message_hash: [u8; 32] = hasher.finalize().into();
+
     verifying_key
-        .verify(message.as_bytes(), &signature)
+        .verify(&message_hash, &signature)
         .map_err(|_| StatusCode::UNAUTHORIZED)
 }
 
@@ -810,11 +1037,27 @@ fn decode_signature(signature_raw: &str) -> Result<Signature, StatusCode> {
             .map_err(|_| StatusCode::UNAUTHORIZED)?
     };
 
-    let bytes: [u8; 64] = decoded
-        .as_slice()
-        .try_into()
-        .map_err(|_| StatusCode::UNAUTHORIZED)?;
-    Ok(Signature::from_bytes(&bytes))
+    // Accept a few common wrappers around the raw 64-byte Ed25519 signature:
+    // - 64 bytes raw signature
+    // - 68 bytes decorated signature (4-byte hint + 64-byte signature)
+    // - 72 bytes XDR-decorated signature (4-byte hint + 4-byte len + 64-byte signature)
+    let normalized: [u8; 64] = if decoded.len() == 64 {
+        decoded
+            .as_slice()
+            .try_into()
+            .map_err(|_| StatusCode::UNAUTHORIZED)?
+    } else if decoded.len() == 68 {
+        decoded[4..68]
+            .try_into()
+            .map_err(|_| StatusCode::UNAUTHORIZED)?
+    } else if decoded.len() == 72 && decoded[4..8] == [0, 0, 0, 64] {
+        decoded[8..72]
+            .try_into()
+            .map_err(|_| StatusCode::UNAUTHORIZED)?
+    } else {
+        return Err(StatusCode::UNAUTHORIZED);
+    };
+    Ok(Signature::from_bytes(&normalized))
 }
 
 fn auth_message(address: &str, table_id: u32, action: &str, nonce: u64, timestamp: i64) -> String {

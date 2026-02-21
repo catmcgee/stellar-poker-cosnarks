@@ -6,7 +6,7 @@ import { PixelWorld } from "@/components/PixelWorld";
 import { PixelCat, PixelHeart } from "@/components/PixelCat";
 
 export default function Home() {
-  const [tableId, setTableId] = useState(1);
+  const [tableId, setTableId] = useState(0);
   const [showContent, setShowContent] = useState(false);
   const [pressStart, setPressStart] = useState(false);
 
@@ -156,7 +156,7 @@ export default function Home() {
               type="number"
               value={tableId}
               onChange={(e) => setTableId(Number(e.target.value))}
-              min={1}
+              min={0}
               className="w-16 text-center text-[10px]"
             />
           </div>
