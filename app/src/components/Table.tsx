@@ -4,6 +4,8 @@ import { useState, useEffect, useCallback } from "react";
 import { Board } from "./Board";
 import { PlayerSeat } from "./PlayerSeat";
 import { ActionPanel } from "./ActionPanel";
+import { PixelWorld } from "./PixelWorld";
+import { PixelCat, PixelHeart } from "./PixelCat";
 import type { GameState } from "@/lib/game-state";
 import { createInitialState } from "@/lib/game-state";
 import * as api from "@/lib/api";
@@ -192,10 +194,9 @@ export function Table({ tableId }: TableProps) {
     [resolvePlayersForDeal, handleDeal, userAddress]
   );
 
-  // Reveal board cards when phase transitions.
   useEffect(() => {
     if (game.phase === "preflop" && game.boardCards.length === 0) {
-      // Auto-reveal could be driven here in a fully automated flow.
+      // Auto-reveal could be driven here
     }
   }, [game.phase, game.boardCards.length]);
 
@@ -252,164 +253,244 @@ export function Table({ tableId }: TableProps) {
   const currentBet = Math.max(...game.players.map((p) => p.betThisRound), 0);
 
   return (
-    <div className="flex flex-col items-center gap-6 min-h-screen bg-gray-900 p-4">
-      {/* Header */}
-      <div className="flex items-center justify-between w-full max-w-3xl gap-4">
-        <h1 className="text-xl font-bold text-white">Stellar Poker - Table #{tableId}</h1>
-        <div className="flex items-center gap-3">
-          <div className="text-sm text-gray-400">Hand #{game.handNumber} | Phase: {game.phase}</div>
-          {wallet ? (
-            <div className="text-xs bg-gray-800 text-green-300 px-3 py-1 rounded border border-gray-700">
-              {shortAddress(wallet.address)}
+    <PixelWorld>
+      <div className="min-h-screen flex flex-col items-center gap-4 p-4 pt-6 relative z-[10]">
+
+        {/* Header bar */}
+        <div className="w-full max-w-3xl flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <PixelHeart size={3} beating />
+            <h1 className="text-[10px]" style={{
+              color: 'white',
+              textShadow: '2px 2px 0 #2c3e50',
+            }}>
+              TABLE #{tableId}
+            </h1>
+          </div>
+
+          <div className="flex items-center gap-3">
+            <div className="text-[7px]" style={{ color: '#c8e6ff' }}>
+              HAND #{game.handNumber} | {game.phase.toUpperCase()}
             </div>
-          ) : (
-            <button
-              onClick={handleConnectWallet}
-              disabled={connectingWallet}
-              className="text-xs bg-blue-700 hover:bg-blue-600 disabled:bg-blue-900 text-white px-3 py-1 rounded"
-            >
-              {connectingWallet ? "Connecting..." : "Connect Freighter"}
-            </button>
-          )}
-          {loading && (
-            <div className="w-4 h-4 border-2 border-yellow-400 border-t-transparent rounded-full animate-spin" />
-          )}
-        </div>
-      </div>
 
-      <div className="w-full max-w-3xl flex items-center gap-2">
-        <input
-          value={opponentAddress}
-          onChange={(e) => setOpponentAddress(e.target.value.trim())}
-          placeholder="Opponent Stellar address (G...)"
-          className="flex-1 bg-gray-800 border border-gray-700 text-gray-100 text-sm px-3 py-2 rounded"
-        />
-        <button
-          onClick={handleConnectWallet}
-          disabled={connectingWallet}
-          className="text-xs bg-gray-700 hover:bg-gray-600 disabled:bg-gray-800 text-gray-200 px-3 py-2 rounded"
-        >
-          {wallet ? "Reconnect" : "Wallet"}
-        </button>
-      </div>
-
-      {error && <div className="bg-red-900/50 text-red-300 px-4 py-2 rounded-lg text-sm">{error}</div>}
-
-      {/* Table felt */}
-      <div
-        className="relative w-full max-w-3xl aspect-[16/10] bg-gradient-to-b from-green-900 to-green-800 rounded-[60px] border-8 border-brown-800 shadow-2xl flex flex-col items-center justify-center gap-4"
-        style={{ borderColor: "#5D4037" }}
-      >
-        {/* Opponent seats (top) */}
-        <div className="flex gap-8 -mt-16">
-          {game.players
-            .filter((p) => !userAddress || p.address !== userAddress)
-            .map((player) => (
-              <PlayerSeat
-                key={player.address}
-                player={player}
-                isCurrentTurn={game.players[game.currentTurn]?.address === player.address}
-                isDealer={player.seat === game.dealerSeat}
-                isUser={false}
-              />
-            ))}
-        </div>
-
-        {/* Board cards and pot */}
-        <Board cards={game.boardCards} pot={game.pot} />
-
-        {/* Dev controls for board reveal */}
-        {game.phase === "preflop" && (
-          <button
-            onClick={() => handleReveal("flop")}
-            className="text-xs bg-gray-700 hover:bg-gray-600 text-gray-300 px-3 py-1 rounded"
-          >
-            Deal Flop
-          </button>
-        )}
-        {game.phase === "flop" && (
-          <button
-            onClick={() => handleReveal("turn")}
-            className="text-xs bg-gray-700 hover:bg-gray-600 text-gray-300 px-3 py-1 rounded"
-          >
-            Deal Turn
-          </button>
-        )}
-        {game.phase === "turn" && (
-          <button
-            onClick={() => handleReveal("river")}
-            className="text-xs bg-gray-700 hover:bg-gray-600 text-gray-300 px-3 py-1 rounded"
-          >
-            Deal River
-          </button>
-        )}
-        {game.phase === "river" && (
-          <button
-            onClick={handleShowdown}
-            className="text-xs bg-purple-700 hover:bg-purple-600 text-white px-3 py-1 rounded font-medium"
-          >
-            Showdown
-          </button>
-        )}
-
-        {/* User seat (bottom) */}
-        <div className="flex gap-8 -mb-16">
-          {userPlayer && (
-            <PlayerSeat
-              player={userPlayer}
-              isCurrentTurn={isMyTurn}
-              isDealer={userPlayer.seat === game.dealerSeat}
-              isUser={true}
-            />
-          )}
-        </div>
-      </div>
-
-      {/* Action panel */}
-      <div className="w-full max-w-3xl">
-        <ActionPanel
-          phase={game.phase}
-          isMyTurn={isMyTurn}
-          currentBet={currentBet}
-          myBet={userPlayer?.betThisRound || 0}
-          myStack={userPlayer?.stack || 0}
-          onAction={handleAction}
-          onChainConfirmed={game.onChainConfirmed}
-        />
-      </div>
-
-      {/* MPC Status footer */}
-      <div className="text-xs text-gray-500 flex flex-col items-center gap-1">
-        <div className="flex items-center gap-2">
-          <div className="w-2 h-2 rounded-full bg-green-500" />
-          MPC Committee: 3/3 nodes online | TACEO coNoir REP3
-          {game.proofSize && (
-            <span className="bg-gray-700 text-gray-300 px-2 py-0.5 rounded text-[10px]">
-              Proof: {(game.proofSize / 1024).toFixed(1)}KB
-            </span>
-          )}
-        </div>
-        {game.lastTxHash && (
-          <div className="flex items-center gap-1">
-            {game.onChainConfirmed ? (
-              <span className="text-green-400">&#10003;</span>
+            {wallet ? (
+              <div className="pixel-border-thin px-2 py-1" style={{
+                background: 'rgba(39, 174, 96, 0.2)',
+                fontSize: '7px',
+                color: '#27ae60',
+              }}>
+                {shortAddress(wallet.address)}
+              </div>
             ) : (
-              <span className="text-yellow-400">&#9679;</span>
-            )}
-            <span className="text-gray-400">
-              Tx:{" "}
-              <a
-                href={`https://stellar.expert/explorer/testnet/tx/${game.lastTxHash}`}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="text-blue-400 hover:underline"
+              <button
+                onClick={handleConnectWallet}
+                disabled={connectingWallet}
+                className="pixel-btn pixel-btn-blue text-[7px]"
+                style={{ padding: '4px 10px' }}
               >
-                {game.lastTxHash.slice(0, 8)}...{game.lastTxHash.slice(-8)}
-              </a>
-            </span>
+                {connectingWallet ? "..." : "CONNECT"}
+              </button>
+            )}
+
+            {loading && (
+              <div style={{
+                width: '12px',
+                height: '12px',
+                border: '2px solid #f1c40f',
+                borderTopColor: 'transparent',
+                borderRadius: '50%',
+                animation: 'spin 0.6s linear infinite',
+              }} />
+            )}
+          </div>
+        </div>
+
+        {/* Opponent address input */}
+        {game.phase === "waiting" && (
+          <div className="w-full max-w-3xl flex items-center gap-2">
+            <input
+              type="text"
+              value={opponentAddress}
+              onChange={(e) => setOpponentAddress(e.target.value.trim())}
+              placeholder="OPPONENT ADDRESS (G...)"
+              className="flex-1 text-[7px]"
+              style={{ padding: '6px 10px' }}
+            />
           </div>
         )}
+
+        {/* Error display */}
+        {error && (
+          <div className="pixel-border-thin px-4 py-2" style={{
+            background: 'rgba(231, 76, 60, 0.2)',
+            borderColor: '#e74c3c',
+          }}>
+            <span className="text-[7px]" style={{ color: '#e74c3c' }}>{error}</span>
+          </div>
+        )}
+
+        {/* ═══ THE POKER TABLE ═══ */}
+        <div className="w-full max-w-3xl relative" style={{ minHeight: '400px' }}>
+
+          {/* Felt surface */}
+          <div
+            className="pixel-border relative w-full flex flex-col items-center justify-center gap-4"
+            style={{
+              background: `
+                radial-gradient(ellipse at center, var(--felt-light) 0%, var(--felt-mid) 40%, var(--felt-dark) 100%)
+              `,
+              borderColor: '#6b4f12',
+              padding: '40px 20px 40px 20px',
+              minHeight: '360px',
+              boxShadow: `
+                inset 0 0 60px rgba(0,0,0,0.3),
+                0 8px 0 0 rgba(0,0,0,0.4),
+                inset -4px -4px 0px 0px rgba(0,0,0,0.3),
+                inset 4px 4px 0px 0px rgba(255,255,255,0.1)
+              `,
+            }}
+          >
+            {/* Table edge decoration */}
+            <div className="absolute inset-2 pointer-events-none" style={{
+              border: '2px solid rgba(139, 105, 20, 0.3)',
+            }} />
+
+            {/* Opponent seats (top) */}
+            <div className="flex gap-4 -mt-2">
+              {game.players
+                .filter((p) => !userAddress || p.address !== userAddress)
+                .map((player) => (
+                  <PlayerSeat
+                    key={player.address}
+                    player={player}
+                    isCurrentTurn={game.players[game.currentTurn]?.address === player.address}
+                    isDealer={player.seat === game.dealerSeat}
+                    isUser={false}
+                  />
+                ))}
+            </div>
+
+            {/* Board */}
+            <Board cards={game.boardCards} pot={game.pot} />
+
+            {/* Phase action buttons */}
+            <div className="flex gap-2">
+              {game.phase === "preflop" && (
+                <button
+                  onClick={() => handleReveal("flop")}
+                  className="pixel-btn pixel-btn-dark text-[7px]"
+                  style={{ padding: '4px 12px' }}
+                >
+                  DEAL FLOP
+                </button>
+              )}
+              {game.phase === "flop" && (
+                <button
+                  onClick={() => handleReveal("turn")}
+                  className="pixel-btn pixel-btn-dark text-[7px]"
+                  style={{ padding: '4px 12px' }}
+                >
+                  DEAL TURN
+                </button>
+              )}
+              {game.phase === "turn" && (
+                <button
+                  onClick={() => handleReveal("river")}
+                  className="pixel-btn pixel-btn-dark text-[7px]"
+                  style={{ padding: '4px 12px' }}
+                >
+                  DEAL RIVER
+                </button>
+              )}
+              {game.phase === "river" && (
+                <button
+                  onClick={handleShowdown}
+                  className="pixel-btn pixel-btn-gold text-[7px]"
+                  style={{ padding: '4px 12px' }}
+                >
+                  SHOWDOWN
+                </button>
+              )}
+            </div>
+
+            {/* User seat (bottom) */}
+            <div className="flex gap-4 -mb-2">
+              {userPlayer && (
+                <PlayerSeat
+                  player={userPlayer}
+                  isCurrentTurn={isMyTurn}
+                  isDealer={userPlayer.seat === game.dealerSeat}
+                  isUser={true}
+                />
+              )}
+            </div>
+          </div>
+        </div>
+
+        {/* Action panel */}
+        <div className="w-full max-w-3xl">
+          <ActionPanel
+            phase={game.phase}
+            isMyTurn={isMyTurn}
+            currentBet={currentBet}
+            myBet={userPlayer?.betThisRound || 0}
+            myStack={userPlayer?.stack || 0}
+            onAction={handleAction}
+            onChainConfirmed={game.onChainConfirmed}
+          />
+        </div>
+
+        {/* MPC Status footer */}
+        <div className="flex flex-col items-center gap-1 mt-2">
+          <div className="flex items-center gap-2">
+            <div style={{
+              width: '6px',
+              height: '6px',
+              background: '#27ae60',
+              boxShadow: '0 0 4px #27ae60',
+            }} />
+            <span className="text-[6px]" style={{ color: '#7f8c8d' }}>
+              MPC: 3/3 NODES | TACEO CO-NOIR REP3
+            </span>
+            {game.proofSize && (
+              <span className="pixel-border-thin px-1 py-0.5 text-[6px]" style={{
+                background: 'rgba(20, 12, 8, 0.6)',
+                color: '#95a5a6',
+              }}>
+                PROOF: {(game.proofSize / 1024).toFixed(1)}KB
+              </span>
+            )}
+          </div>
+          {game.lastTxHash && (
+            <div className="flex items-center gap-1">
+              {game.onChainConfirmed ? (
+                <PixelHeart size={2} />
+              ) : (
+                <div style={{ width: '4px', height: '4px', background: '#f1c40f' }} />
+              )}
+              <span className="text-[6px]" style={{ color: '#7f8c8d' }}>
+                TX:{" "}
+                <a
+                  href={`https://stellar.expert/explorer/testnet/tx/${game.lastTxHash}`}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  style={{ color: '#3498db' }}
+                >
+                  {game.lastTxHash.slice(0, 8)}...{game.lastTxHash.slice(-8)}
+                </a>
+              </span>
+            </div>
+          )}
+        </div>
+
+        {/* Decorative cats at bottom of scene */}
+        <div className="fixed bottom-[14%] left-[5%] z-[5]">
+          <PixelCat variant="grey" size={4} />
+        </div>
+        <div className="fixed bottom-[13%] right-[5%] z-[5]">
+          <PixelCat variant="black" size={5} flipped />
+        </div>
       </div>
-    </div>
+    </PixelWorld>
   );
 }

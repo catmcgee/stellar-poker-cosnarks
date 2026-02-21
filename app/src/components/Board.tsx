@@ -9,20 +9,47 @@ interface BoardProps {
 
 export function Board({ cards, pot }: BoardProps) {
   return (
-    <div className="flex flex-col items-center gap-4">
-      <div className="text-lg font-bold text-yellow-400">
-        Pot: {pot.toLocaleString()} XLM
+    <div className="flex flex-col items-center gap-3">
+      {/* Pot display */}
+      <div className="flex items-center gap-2">
+        {/* Pixel coin */}
+        <div style={{
+          width: '4px',
+          height: '4px',
+          background: 'transparent',
+          boxShadow: `
+            4px 0 0 #f1c40f, 8px 0 0 #f1c40f,
+            0 4px 0 #f1c40f, 4px 4px 0 #f4d03f, 8px 4px 0 #d4ac0d, 12px 4px 0 #f1c40f,
+            0 8px 0 #f1c40f, 4px 8px 0 #f4d03f, 8px 8px 0 #d4ac0d, 12px 8px 0 #f1c40f,
+            4px 12px 0 #f1c40f, 8px 12px 0 #f1c40f
+          `,
+        }} />
+        <span className="text-[10px]" style={{
+          color: '#f1c40f',
+          textShadow: '1px 1px 0 rgba(0,0,0,0.6)',
+          marginLeft: '16px',
+        }}>
+          POT: {pot.toLocaleString()} XLM
+        </span>
       </div>
 
-      <div className="flex gap-2">
+      {/* Community cards */}
+      <div className="flex gap-2 items-center">
         {cards.map((card, i) => (
-          <Card key={i} value={card} size="md" />
+          <div key={i} className="animate-card-deal" style={{ animationDelay: `${i * 0.1}s` }}>
+            <Card value={card} size="md" />
+          </div>
         ))}
-        {/* Empty slots for remaining cards */}
+        {/* Empty slots */}
         {Array.from({ length: 5 - cards.length }).map((_, i) => (
           <div
             key={`empty-${i}`}
-            className="w-16 h-24 rounded-lg border-2 border-dashed border-gray-600 bg-gray-800/40"
+            style={{
+              width: '56px',
+              height: '80px',
+              border: '3px dashed rgba(139, 105, 20, 0.3)',
+              background: 'rgba(0, 0, 0, 0.15)',
+            }}
           />
         ))}
       </div>

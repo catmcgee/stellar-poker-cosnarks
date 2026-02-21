@@ -7,7 +7,7 @@ edition = "2021"
 crate-type = ["cdylib"]
 
 [dependencies]
-soroban-sdk = { workspace = true }
+soroban-sdk = { workspace = true, features = ["alloc"] }
 ultrahonk_soroban_verifier = { path = "../../vendor/ultrahonk-rust-verifier/ultrahonk-soroban-verifier", default-features = false }
 
 [dev-dependencies]

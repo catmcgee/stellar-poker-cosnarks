@@ -214,7 +214,7 @@ pub async fn run_proof_generation(
     );
 
     // Step 2: Build and generate proof in MPC
-    let vk_path = format!("{}/{}/target/vk", circuit_dir, circuit_name);
+    let vk_path = format!("{}/{}/target/vk_keccak", circuit_dir, circuit_name);
     let proof_output = Command::new("co-noir")
         .arg("build-and-generate-proof")
         .arg("--circuit")
@@ -228,7 +228,7 @@ pub async fn run_proof_generation(
         .arg("--crs")
         .arg(&crs_file)
         .arg("--hasher")
-        .arg("poseidon2")
+        .arg("keccak")
         .arg("--vk")
         .arg(&vk_path)
         .arg("--out")

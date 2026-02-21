@@ -1,74 +1,207 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import Link from "next/link";
+import { PixelWorld } from "@/components/PixelWorld";
+import { PixelCat, PixelHeart } from "@/components/PixelCat";
 
 export default function Home() {
   const [tableId, setTableId] = useState(1);
+  const [showContent, setShowContent] = useState(false);
+  const [pressStart, setPressStart] = useState(false);
+
+  useEffect(() => {
+    const timer = setTimeout(() => setShowContent(true), 300);
+    return () => clearTimeout(timer);
+  }, []);
+
+  if (!pressStart) {
+    return (
+      <PixelWorld>
+        <div className="min-h-screen flex flex-col items-center justify-center gap-6 p-8">
+          {/* Hearts row */}
+          <div className="flex gap-3 mb-2" style={{
+            opacity: showContent ? 1 : 0,
+            transition: 'opacity 0.5s ease-in',
+            transitionDelay: '0.2s',
+          }}>
+            <PixelHeart size={5} beating />
+            <PixelHeart size={5} beating />
+            <PixelHeart size={5} beating />
+          </div>
+
+          {/* Title */}
+          <div className="text-center" style={{
+            opacity: showContent ? 1 : 0,
+            transform: showContent ? 'translateY(0)' : 'translateY(-20px)',
+            transition: 'all 0.6s ease-out',
+            transitionDelay: '0.4s',
+          }}>
+            <h1 className="text-4xl md:text-5xl leading-relaxed" style={{
+              color: 'white',
+              textShadow: '4px 4px 0 #2c3e50, -1px -1px 0 #2c3e50, 1px -1px 0 #2c3e50, -1px 1px 0 #2c3e50',
+              letterSpacing: '3px',
+            }}>
+              POKER
+            </h1>
+            <h2 className="text-2xl md:text-3xl mt-1" style={{
+              color: 'white',
+              textShadow: '3px 3px 0 #2c3e50, -1px -1px 0 #2c3e50, 1px -1px 0 #2c3e50, -1px 1px 0 #2c3e50',
+              letterSpacing: '2px',
+            }}>
+              ON STELLAR
+            </h2>
+          </div>
+
+          {/* Press to Start */}
+          <button
+            onClick={() => setPressStart(true)}
+            className="mt-6"
+            style={{
+              opacity: showContent ? 1 : 0,
+              transition: 'opacity 0.5s ease-in',
+              transitionDelay: '0.8s',
+              animation: showContent ? 'textPulse 1.5s ease-in-out infinite' : undefined,
+              color: '#f5e6c8',
+              textShadow: '2px 2px 0 #2c3e50',
+              fontSize: '14px',
+              background: 'none',
+              border: 'none',
+              cursor: 'pointer',
+              fontFamily: "'Press Start 2P', monospace",
+            }}
+          >
+            PRESS TO START
+          </button>
+
+          {/* Cats decorating the scene */}
+          <div className="fixed bottom-[14%] left-[8%] z-[5]" style={{
+            opacity: showContent ? 1 : 0,
+            transition: 'opacity 0.5s',
+            transitionDelay: '1s',
+          }}>
+            <PixelCat variant="grey" size={5} />
+          </div>
+          <div className="fixed bottom-[15%] left-[35%] z-[5]" style={{
+            opacity: showContent ? 1 : 0,
+            transition: 'opacity 0.5s',
+            transitionDelay: '1.2s',
+          }}>
+            <PixelCat variant="orange" size={6} />
+          </div>
+          <div className="fixed bottom-[13%] right-[8%] z-[5]" style={{
+            opacity: showContent ? 1 : 0,
+            transition: 'opacity 0.5s',
+            transitionDelay: '1.4s',
+          }}>
+            <PixelCat variant="black" size={6} flipped />
+          </div>
+        </div>
+      </PixelWorld>
+    );
+  }
 
   return (
-    <div className="min-h-screen flex flex-col items-center justify-center gap-8 p-8">
-      <div className="text-center">
-        <h1 className="text-5xl font-bold text-white mb-2">Stellar Poker</h1>
-        <p className="text-gray-400 text-lg">
-          Onchain Texas Hold&apos;em with private cards
-        </p>
-        <p className="text-gray-500 text-sm mt-1">
-          Powered by TACEO coNoir MPC + UltraHonk ZK proofs on Soroban
-        </p>
-      </div>
+    <PixelWorld>
+      <div className="min-h-screen flex flex-col items-center justify-center gap-8 p-8">
+        {/* Logo area */}
+        <div className="text-center">
+          <div className="flex gap-2 justify-center mb-3">
+            <PixelHeart size={4} beating />
+            <PixelHeart size={4} beating />
+            <PixelHeart size={4} beating />
+          </div>
+          <h1 className="text-3xl md:text-4xl leading-relaxed" style={{
+            color: 'white',
+            textShadow: '3px 3px 0 #2c3e50',
+            letterSpacing: '2px',
+          }}>
+            POKER ON STELLAR
+          </h1>
+          <p className="text-[9px] mt-3" style={{
+            color: '#c8e6ff',
+            textShadow: '1px 1px 0 rgba(0,0,0,0.5)',
+          }}>
+            PRIVATE CARDS VIA MPC + ZK PROOFS
+          </p>
+        </div>
 
-      <div className="flex flex-col items-center gap-4 bg-gray-800/60 rounded-2xl p-8 border border-gray-700">
-        <h2 className="text-lg font-semibold text-gray-200">Join a Table</h2>
+        {/* Join table panel */}
+        <div className="pixel-border p-6 flex flex-col items-center gap-5" style={{
+          background: 'var(--ui-panel)',
+          minWidth: '320px',
+        }}>
+          <h2 className="text-xs" style={{
+            color: '#f1c40f',
+            textShadow: '1px 1px 0 rgba(0,0,0,0.6)',
+          }}>
+            JOIN A TABLE
+          </h2>
 
-        <div className="flex items-center gap-3">
-          <label className="text-gray-400 text-sm">Table ID:</label>
-          <input
-            type="number"
-            value={tableId}
-            onChange={(e) => setTableId(Number(e.target.value))}
-            min={1}
-            className="w-20 px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white text-center"
+          <div className="flex items-center gap-3">
+            <label className="text-[8px]" style={{ color: '#bdc3c7' }}>TABLE:</label>
+            <input
+              type="number"
+              value={tableId}
+              onChange={(e) => setTableId(Number(e.target.value))}
+              min={1}
+              className="w-16 text-center text-[10px]"
+            />
+          </div>
+
+          <Link
+            href={`/table/${tableId}`}
+            className="pixel-btn pixel-btn-green text-[10px]"
+          >
+            PLAY NOW
+          </Link>
+
+          <div className="text-[7px] text-center leading-relaxed max-w-xs" style={{ color: '#7f8c8d' }}>
+            NO SINGLE PARTY SEES YOUR CARDS.
+            MPC COMMITTEE SHUFFLES AND DEALS
+            USING REP3 SECRET SHARING.
+          </div>
+        </div>
+
+        {/* Feature cards */}
+        <div className="flex flex-wrap gap-4 justify-center max-w-2xl">
+          <FeatureCard
+            icon={<PixelCat variant="grey" size={3} />}
+            title="PRIVATE"
+            desc="REP3 MPC HIDES YOUR HAND"
+          />
+          <FeatureCard
+            icon={<PixelHeart size={3} />}
+            title="ZK VERIFIED"
+            desc="ULTRAHONK PROOFS ON-CHAIN"
+          />
+          <FeatureCard
+            icon={<PixelCat variant="black" size={3} flipped />}
+            title="ON-CHAIN"
+            desc="SOROBAN SETTLES BETS"
           />
         </div>
 
-        <Link
-          href={`/table/${tableId}`}
-          className="px-8 py-3 bg-green-600 hover:bg-green-500 text-white rounded-lg font-bold text-lg transition shadow-lg"
-        >
-          Play Now
-        </Link>
-
-        <div className="text-xs text-gray-500 text-center mt-4 max-w-sm">
-          No single party sees your cards. The MPC committee (3 nodes running
-          TACEO coNoir) shuffles and deals using REP3 secret sharing. ZK proofs
-          verify every action on-chain.
+        {/* Cats at bottom */}
+        <div className="fixed bottom-[14%] left-[6%] z-[5]">
+          <PixelCat variant="grey" size={4} />
+        </div>
+        <div className="fixed bottom-[13%] right-[6%] z-[5]">
+          <PixelCat variant="orange" size={5} flipped />
         </div>
       </div>
+    </PixelWorld>
+  );
+}
 
-      <div className="grid grid-cols-3 gap-6 text-center max-w-2xl">
-        <div className="bg-gray-800/40 rounded-xl p-4 border border-gray-700/50">
-          <div className="text-2xl mb-2">&#x1f512;</div>
-          <div className="text-sm font-medium text-gray-300">Private Cards</div>
-          <div className="text-xs text-gray-500 mt-1">
-            REP3 MPC ensures no one sees your hand
-          </div>
-        </div>
-        <div className="bg-gray-800/40 rounded-xl p-4 border border-gray-700/50">
-          <div className="text-2xl mb-2">&#x2714;</div>
-          <div className="text-sm font-medium text-gray-300">ZK Verified</div>
-          <div className="text-xs text-gray-500 mt-1">
-            UltraHonk proofs verify deals and reveals
-          </div>
-        </div>
-        <div className="bg-gray-800/40 rounded-xl p-4 border border-gray-700/50">
-          <div className="text-2xl mb-2">&#x26d3;</div>
-          <div className="text-sm font-medium text-gray-300">On-Chain</div>
-          <div className="text-xs text-gray-500 mt-1">
-            Soroban contracts settle bets trustlessly
-          </div>
-        </div>
-      </div>
+function FeatureCard({ icon, title, desc }: { icon: React.ReactNode; title: string; desc: string }) {
+  return (
+    <div className="pixel-border-thin p-4 flex flex-col items-center gap-2 w-36" style={{
+      background: 'rgba(20, 12, 8, 0.75)',
+    }}>
+      <div className="mb-1">{icon}</div>
+      <div className="text-[8px]" style={{ color: '#f1c40f' }}>{title}</div>
+      <div className="text-[6px] text-center leading-relaxed" style={{ color: '#95a5a6' }}>{desc}</div>
     </div>
   );
 }

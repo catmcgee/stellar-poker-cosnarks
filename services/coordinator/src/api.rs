@@ -149,24 +149,22 @@ pub async fn request_deal(
         },
     )?;
 
-    let tx_hash = soroban::submit_deal_proof(
+    let tx_hash = match soroban::submit_deal_proof(
         &state.soroban_config,
         table_id,
         &deal_proof.proof,
-        &concat_public_inputs(&deal_proof.public_inputs),
+        &deal_proof.public_inputs,
         &parsed_deal.deck_root,
         &parsed_deal.hand_commitments,
     )
     .await
-    .map_err(|e| {
-        tracing::error!("Failed to submit deal proof to Soroban: {}", e);
-        StatusCode::BAD_GATEWAY
-    })?;
-
-    let tx_hash = if tx_hash.is_empty() {
-        None
-    } else {
-        Some(tx_hash)
+    {
+        Ok(h) if !h.is_empty() => Some(h),
+        Ok(_) => None,
+        Err(e) => {
+            tracing::warn!("Soroban deal proof submission failed (non-fatal): {}", e);
+            None
+        }
     };
 
     let player_card_positions: Vec<(u32, u32)> = (0..req.players.len())
@@ -305,24 +303,22 @@ pub async fn request_reveal(
             StatusCode::BAD_GATEWAY
         })?;
 
-    let tx_hash = soroban::submit_reveal_proof(
+    let tx_hash = match soroban::submit_reveal_proof(
         &state.soroban_config,
         table_id,
         &reveal_proof.proof,
-        &concat_public_inputs(&reveal_proof.public_inputs),
+        &reveal_proof.public_inputs,
         &parsed_reveal.cards,
         &parsed_reveal.indices,
     )
     .await
-    .map_err(|e| {
-        tracing::error!("Failed to submit reveal proof to Soroban: {}", e);
-        StatusCode::BAD_GATEWAY
-    })?;
-
-    let tx_hash = if tx_hash.is_empty() {
-        None
-    } else {
-        Some(tx_hash)
+    {
+        Ok(h) if !h.is_empty() => Some(h),
+        Ok(_) => None,
+        Err(e) => {
+            tracing::warn!("Soroban reveal proof submission failed (non-fatal): {}", e);
+            None
+        }
     };
 
     session
@@ -441,23 +437,21 @@ pub async fn request_showdown(
     }
     let winner = session.player_order[parsed_showdown.winner_index as usize].clone();
 
-    let tx_hash = soroban::submit_showdown_proof(
+    let tx_hash = match soroban::submit_showdown_proof(
         &state.soroban_config,
         table_id,
         &showdown_proof.proof,
-        &concat_public_inputs(&showdown_proof.public_inputs),
+        &showdown_proof.public_inputs,
         &parsed_showdown.hole_cards,
     )
     .await
-    .map_err(|e| {
-        tracing::error!("Failed to submit showdown proof to Soroban: {}", e);
-        StatusCode::BAD_GATEWAY
-    })?;
-
-    let tx_hash = if tx_hash.is_empty() {
-        None
-    } else {
-        Some(tx_hash)
+    {
+        Ok(h) if !h.is_empty() => Some(h),
+        Ok(_) => None,
+        Err(e) => {
+            tracing::warn!("Soroban showdown proof submission failed (non-fatal): {}", e);
+            None
+        }
     };
 
     session.phase = "settlement".to_string();
@@ -849,14 +843,6 @@ fn now_unix_secs_u64() -> Result<u64, StatusCode> {
 fn now_unix_secs_i64() -> Result<i64, StatusCode> {
     let now = now_unix_secs_u64()?;
     i64::try_from(now).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
-}
-
-fn concat_public_inputs(public_inputs: &[String]) -> Vec<u8> {
-    public_inputs
-        .iter()
-        .map(|s| s.as_bytes())
-        .collect::<Vec<_>>()
-        .concat()
 }
 
 fn next_proof_session_id(session: &mut TableSession, label: &str) -> String {

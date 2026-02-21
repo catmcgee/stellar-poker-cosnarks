@@ -1,7 +1,262 @@
 @import "tailwindcss";
+@import url('https://fonts.googleapis.com/css2?family=Press+Start+2P&display=swap');
+
+:root {
+  --sky-top: #4a90d9;
+  --sky-bottom: #87ceeb;
+  --grass-light: #5cb85c;
+  --grass-mid: #4cae4c;
+  --grass-dark: #3d8b3d;
+  --grass-shadow: #2d6b2d;
+  --pixel-brown: #8b6914;
+  --pixel-brown-dark: #6b4f12;
+  --pixel-cream: #f5e6c8;
+  --pixel-red: #e74c3c;
+  --pixel-gold: #f1c40f;
+  --pixel-blue: #3498db;
+  --pixel-green: #27ae60;
+  --felt-dark: #1a5c2a;
+  --felt-mid: #237a3a;
+  --felt-light: #2d9648;
+  --card-white: #fefefe;
+  --card-shadow: #c0c0c0;
+  --ui-panel: rgba(20, 12, 8, 0.85);
+  --ui-border: #8b6914;
+}
+
+* {
+  image-rendering: pixelated;
+  image-rendering: -moz-crisp-edges;
+  image-rendering: crisp-edges;
+}
 
 body {
-  background: #111827;
-  color: #f3f4f6;
-  font-family: system-ui, -apple-system, sans-serif;
+  background: var(--sky-top);
+  color: var(--pixel-cream);
+  font-family: 'Press Start 2P', monospace;
+  overflow-x: hidden;
+  min-height: 100vh;
+}
+
+/* Pixel border utility */
+.pixel-border {
+  border: 4px solid var(--ui-border);
+  box-shadow:
+    inset -4px -4px 0px 0px rgba(0,0,0,0.3),
+    inset 4px 4px 0px 0px rgba(255,255,255,0.15),
+    0 4px 0 0 rgba(0,0,0,0.4);
+}
+
+.pixel-border-thin {
+  border: 3px solid var(--ui-border);
+  box-shadow:
+    inset -2px -2px 0px 0px rgba(0,0,0,0.25),
+    inset 2px 2px 0px 0px rgba(255,255,255,0.1),
+    0 3px 0 0 rgba(0,0,0,0.3);
+}
+
+.pixel-border-white {
+  border: 3px solid #d4d4d4;
+  box-shadow:
+    inset -2px -2px 0px 0px rgba(0,0,0,0.15),
+    inset 2px 2px 0px 0px rgba(255,255,255,0.4),
+    0 3px 0 0 rgba(0,0,0,0.2);
+}
+
+/* Pixel button base */
+.pixel-btn {
+  font-family: 'Press Start 2P', monospace;
+  border: 3px solid;
+  padding: 10px 20px;
+  cursor: pointer;
+  transition: transform 0.05s;
+  position: relative;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+}
+
+.pixel-btn:active {
+  transform: translateY(2px);
+  box-shadow: none !important;
+}
+
+.pixel-btn-green {
+  background: #27ae60;
+  border-color: #1e8449;
+  color: white;
+  box-shadow: 0 4px 0 0 #1a6b37, inset 0 -2px 0 0 rgba(0,0,0,0.2);
+  text-shadow: 1px 1px 0 rgba(0,0,0,0.4);
+}
+.pixel-btn-green:hover { background: #2ecc71; }
+
+.pixel-btn-red {
+  background: #e74c3c;
+  border-color: #c0392b;
+  color: white;
+  box-shadow: 0 4px 0 0 #96281b, inset 0 -2px 0 0 rgba(0,0,0,0.2);
+  text-shadow: 1px 1px 0 rgba(0,0,0,0.4);
+}
+.pixel-btn-red:hover { background: #ec7063; }
+
+.pixel-btn-blue {
+  background: #3498db;
+  border-color: #2980b9;
+  color: white;
+  box-shadow: 0 4px 0 0 #1f6da0, inset 0 -2px 0 0 rgba(0,0,0,0.2);
+  text-shadow: 1px 1px 0 rgba(0,0,0,0.4);
+}
+.pixel-btn-blue:hover { background: #5dade2; }
+
+.pixel-btn-gold {
+  background: #f1c40f;
+  border-color: #d4ac0d;
+  color: #3d2400;
+  box-shadow: 0 4px 0 0 #b7950b, inset 0 -2px 0 0 rgba(0,0,0,0.15);
+  text-shadow: 1px 1px 0 rgba(255,255,255,0.3);
+}
+.pixel-btn-gold:hover { background: #f4d03f; }
+
+.pixel-btn-orange {
+  background: #e67e22;
+  border-color: #ca6f1e;
+  color: white;
+  box-shadow: 0 4px 0 0 #a04000, inset 0 -2px 0 0 rgba(0,0,0,0.2);
+  text-shadow: 1px 1px 0 rgba(0,0,0,0.4);
+}
+.pixel-btn-orange:hover { background: #f39c12; }
+
+.pixel-btn-dark {
+  background: #34495e;
+  border-color: #2c3e50;
+  color: #bdc3c7;
+  box-shadow: 0 4px 0 0 #1a252f, inset 0 -2px 0 0 rgba(0,0,0,0.2);
+}
+.pixel-btn-dark:hover { background: #415b76; }
+
+/* Cloud animation */
+@keyframes cloudFloat {
+  0% { transform: translateX(0); }
+  100% { transform: translateX(100vw); }
+}
+
+@keyframes cloudFloat2 {
+  0% { transform: translateX(-30vw); }
+  100% { transform: translateX(130vw); }
+}
+
+/* Pixel cat idle bounce */
+@keyframes catIdle {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-3px); }
+}
+
+/* Heart beat */
+@keyframes heartBeat {
+  0%, 100% { transform: scale(1); }
+  50% { transform: scale(1.15); }
+}
+
+/* Sparkle for winning */
+@keyframes sparkle {
+  0%, 100% { opacity: 0; transform: scale(0.5) rotate(0deg); }
+  50% { opacity: 1; transform: scale(1) rotate(180deg); }
+}
+
+/* Text pulse for turn indicator */
+@keyframes textPulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
+}
+
+/* Subtle parallax grass sway */
+@keyframes grassSway {
+  0%, 100% { transform: scaleY(1); }
+  50% { transform: scaleY(1.02); }
+}
+
+/* Card deal animation */
+@keyframes cardDeal {
+  0% { transform: translateY(-40px) rotate(-10deg); opacity: 0; }
+  100% { transform: translateY(0) rotate(0deg); opacity: 1; }
+}
+
+.animate-card-deal {
+  animation: cardDeal 0.3s ease-out forwards;
+}
+
+/* Loading spinner */
+@keyframes spin {
+  0% { transform: rotate(0deg); }
+  100% { transform: rotate(360deg); }
+}
+
+/* Chip stack bounce */
+@keyframes chipBounce {
+  0% { transform: translateY(-20px); opacity: 0; }
+  60% { transform: translateY(2px); opacity: 1; }
+  100% { transform: translateY(0); opacity: 1; }
+}
+
+.animate-chip-bounce {
+  animation: chipBounce 0.4s ease-out forwards;
+}
+
+/* Range slider pixel style */
+input[type="range"] {
+  -webkit-appearance: none;
+  appearance: none;
+  height: 8px;
+  background: #2c3e50;
+  border: 2px solid #8b6914;
+  outline: none;
+  cursor: pointer;
+}
+
+input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 16px;
+  height: 16px;
+  background: #f1c40f;
+  border: 2px solid #b7950b;
+  cursor: pointer;
+}
+
+input[type="range"]::-moz-range-thumb {
+  width: 16px;
+  height: 16px;
+  background: #f1c40f;
+  border: 2px solid #b7950b;
+  cursor: pointer;
+  border-radius: 0;
+}
+
+/* Scrollbar pixel style */
+::-webkit-scrollbar {
+  width: 8px;
+}
+::-webkit-scrollbar-track {
+  background: #1a1a2e;
+}
+::-webkit-scrollbar-thumb {
+  background: #8b6914;
+  border: 1px solid #6b4f12;
+}
+
+/* Input pixel style */
+input[type="number"],
+input[type="text"] {
+  font-family: 'Press Start 2P', monospace;
+  background: #1a1a2e;
+  border: 3px solid #8b6914;
+  color: var(--pixel-cream);
+  padding: 8px 12px;
+  font-size: 10px;
+  box-shadow: inset 2px 2px 0 rgba(0,0,0,0.4);
+}
+
+input[type="number"]:focus,
+input[type="text"]:focus {
+  outline: none;
+  border-color: #f1c40f;
 }
