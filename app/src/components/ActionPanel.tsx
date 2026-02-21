@@ -80,13 +80,10 @@ export function ActionPanel({
 
   // Active betting phase (preflop, flop, turn, river)
   const isActive = ["preflop", "flop", "turn", "river"].includes(phase);
-  const soloDisabled = isSolo;
-  const disabled = !isMyTurn || loading || soloDisabled;
+  const disabled = !isMyTurn || loading;
   if (!isActive) {
     return null;
   }
-
-  const soloDisabledTitle = "Disabled in Solo vs AI mode";
 
   return (
     <div
@@ -97,32 +94,29 @@ export function ActionPanel({
       }}
     >
       {/* Bet info row */}
-      {!soloDisabled && (
-        <div className="flex items-center gap-4">
-          <div className="flex items-center gap-1">
-            <PixelChip color="red" size={2} />
-            <span className="text-[9px]" style={{ color: "#95a5a6" }}>
-              TABLE BET: {currentBet}
-            </span>
-          </div>
-          <div className="flex items-center gap-1">
-            <PixelChip color="blue" size={2} />
-            <span className="text-[9px]" style={{ color: "#95a5a6" }}>
-              YOUR BET: {myBet}
-            </span>
-          </div>
-          <div className="flex items-center gap-1">
-            <PixelChip color="gold" size={2} />
-            <span className="text-[9px]" style={{ color: "#27ae60" }}>
-              STACK: {myStack.toLocaleString()}
-            </span>
-          </div>
+      <div className="flex items-center gap-4">
+        <div className="flex items-center gap-1">
+          <PixelChip color="red" size={2} />
+          <span className="text-[9px]" style={{ color: "#95a5a6" }}>
+            TABLE BET: {currentBet}
+          </span>
         </div>
-      )}
-
-      {soloDisabled && (
+        <div className="flex items-center gap-1">
+          <PixelChip color="blue" size={2} />
+          <span className="text-[9px]" style={{ color: "#95a5a6" }}>
+            YOUR BET: {myBet}
+          </span>
+        </div>
+        <div className="flex items-center gap-1">
+          <PixelChip color="gold" size={2} />
+          <span className="text-[9px]" style={{ color: "#27ae60" }}>
+            STACK: {myStack.toLocaleString()}
+          </span>
+        </div>
+      </div>
+      {isSolo && (
         <span className="text-[9px]" style={{ color: "#f39c12", fontStyle: "italic" }}>
-          SOLO VS AI: betting is disabled. Dealer auto-plays checks/calls.
+          SOLO VS AI: using fake chips for local play.
         </span>
       )}
       {/* Action buttons */}
@@ -131,7 +125,6 @@ export function ActionPanel({
         <button
           onClick={() => onAction("fold")}
           disabled={disabled}
-          title={soloDisabled ? soloDisabledTitle : undefined}
           className="pixel-btn text-[10px]"
           style={{
             padding: "6px 14px",
@@ -148,7 +141,6 @@ export function ActionPanel({
         <button
           onClick={() => onAction(callAmount === 0 ? "check" : "call", callAmount)}
           disabled={disabled}
-          title={soloDisabled ? soloDisabledTitle : undefined}
           className="pixel-btn text-[10px]"
           style={{
             padding: "6px 14px",
@@ -165,7 +157,6 @@ export function ActionPanel({
         <button
           onClick={() => onAction(currentBet === 0 ? "bet" : "raise", betAmount || minBet)}
           disabled={disabled || myStack <= callAmount}
-          title={soloDisabled ? soloDisabledTitle : undefined}
           className="pixel-btn text-[10px]"
           style={{
             padding: "6px 14px",
@@ -182,7 +173,6 @@ export function ActionPanel({
         <button
           onClick={() => onAction("allin", myStack)}
           disabled={disabled || myStack <= 0}
-          title={soloDisabled ? soloDisabledTitle : undefined}
           className="pixel-btn text-[10px]"
           style={{
             padding: "6px 14px",
@@ -198,7 +188,7 @@ export function ActionPanel({
       </div>
 
       {/* Bet slider + quick buttons */}
-      {!disabled && !soloDisabled && myStack > callAmount && (
+      {!disabled && myStack > callAmount && (
         <div className="flex items-center gap-3 w-full max-w-sm">
           <input
             type="range"

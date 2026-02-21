@@ -262,6 +262,53 @@ fn resolve_buy_in_from_table_state(state: &serde_json::Value, requested: i128) -
     }
 }
 
+fn friendbot_url(config: &SorobanConfig) -> Option<String> {
+    if let Ok(url) = std::env::var("FRIENDBOT_URL") {
+        let trimmed = url.trim();
+        if !trimmed.is_empty() {
+            return Some(trimmed.to_string());
+        }
+    }
+
+    if config.rpc_url.contains("localhost:8000") || config.rpc_url.contains("127.0.0.1:8000") {
+        return Some("http://localhost:8000/friendbot".to_string());
+    }
+
+    None
+}
+
+async fn maybe_friendbot_top_up(config: &SorobanConfig, address: &str) {
+    let Some(base) = friendbot_url(config) else {
+        return;
+    };
+    let url = format!("{}?addr={}", base, address);
+    match Command::new("curl")
+        .args(["-sfL", &url])
+        .output()
+        .await
+    {
+        Ok(output) if output.status.success() => {
+            tracing::info!("friendbot topped up {}", address);
+        }
+        Ok(output) => {
+            tracing::warn!(
+                "friendbot top-up failed for {}: {}",
+                address,
+                String::from_utf8_lossy(&output.stderr).trim()
+            );
+        }
+        Err(e) => {
+            tracing::warn!("friendbot top-up failed for {}: {}", address, e);
+        }
+    }
+}
+
+fn looks_like_insufficient_balance(error: &str) -> bool {
+    let e = error.to_ascii_lowercase();
+    e.contains("resulting balance is not within the allowed range")
+        || (e.contains("error(contract, #10)") && e.contains("transfer"))
+}
+
 /// When reveal is requested directly from the frontend, advance one legal betting
 /// action if the on-chain table is still in a betting phase.
 pub async fn maybe_auto_advance_betting_for_reveal(
@@ -794,21 +841,35 @@ pub async fn join_next_available_local_player(
 
     let resolved_buy_in = resolve_buy_in_from_table_state(&state, buy_in);
     let onchain_table_id = resolve_onchain_table_id(config, table_id);
-    let output = invoke_contract_with_source_retries(
-        config,
-        identity,
-        vec![
-            "join_table".to_string(),
-            "--table_id".to_string(),
-            onchain_table_id.to_string(),
-            "--player".to_string(),
-            player_address.clone(),
-            "--buy_in".to_string(),
-            resolved_buy_in.to_string(),
-        ],
-    )
-    .await?;
-    parse_tx_result(output)?;
+    let join_args = vec![
+        "join_table".to_string(),
+        "--table_id".to_string(),
+        onchain_table_id.to_string(),
+        "--player".to_string(),
+        player_address.clone(),
+        "--buy_in".to_string(),
+        resolved_buy_in.to_string(),
+    ];
+
+    // Keep local identities liquid so repeated solo-table creation does not
+    // fail with transfer underflow after many test hands/tables.
+    maybe_friendbot_top_up(config, player_address).await;
+
+    let output = invoke_contract_with_source_retries(config, identity, join_args.clone()).await?;
+    if let Err(first_error) = parse_tx_result(output) {
+        if looks_like_insufficient_balance(&first_error) {
+            tracing::warn!(
+                "join_table for {} failed due to balance; topping up and retrying once",
+                player_address
+            );
+            maybe_friendbot_top_up(config, player_address).await;
+            let retry_output =
+                invoke_contract_with_source_retries(config, identity, join_args).await?;
+            parse_tx_result(retry_output)?;
+        } else {
+            return Err(first_error);
+        }
+    }
 
     Ok(player_address.clone())
 }

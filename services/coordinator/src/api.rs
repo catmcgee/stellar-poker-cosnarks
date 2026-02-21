@@ -408,19 +408,11 @@ pub async fn request_deal(
 ) -> Result<Json<DealResponse>, StatusCode> {
     validate_table_id(table_id)?;
     enforce_rate_limit(&state, &headers, table_id, "request_deal").await?;
-    let auth = validate_signed_request(&state, &headers, table_id, "request_deal", None).await?;
 
     let players = if req.players.is_empty() {
-        resolve_deal_players_from_lobby(&state, table_id, &auth.address).await?
+        resolve_deal_players_from_lobby(&state, table_id).await?
     } else {
         validate_players(&req.players)?;
-        if !req.players.iter().any(|p| p == &auth.address) {
-            tracing::warn!(
-                "request_deal denied: caller {} is not in provided players list",
-                auth.address
-            );
-            return Err(StatusCode::UNAUTHORIZED);
-        }
         req.players
     };
 
@@ -544,7 +536,6 @@ pub async fn request_reveal(
 
     let action = format!("request_reveal:{}", phase);
     enforce_rate_limit(&state, &headers, table_id, &action).await?;
-    let auth = validate_signed_request(&state, &headers, table_id, &action, None).await?;
 
     if state.mpc_config.node_endpoints.is_empty() {
         return Err(StatusCode::SERVICE_UNAVAILABLE);
@@ -555,11 +546,8 @@ pub async fn request_reveal(
     let mut tables = state.tables.write().await;
     let session = tables.get_mut(&table_id).ok_or(StatusCode::NOT_FOUND)?;
 
-    // Any authenticated caller may trigger reveal progression.
-    // Seat-gating here makes local spectator/operator UX brittle after restarts
-    // and does not protect private card data (cards remain protected by
-    // get_player_cards auth checks).
-    let _ = auth;
+    // Any caller may trigger reveal progression.
+    // Private card data remains protected by get_player_cards auth checks.
 
     let expected_next_phase = match session.phase.as_str() {
         "preflop" => "flop",
@@ -711,8 +699,6 @@ pub async fn request_showdown(
     validate_table_id(table_id)?;
 
     enforce_rate_limit(&state, &headers, table_id, "request_showdown").await?;
-    let auth =
-        validate_signed_request(&state, &headers, table_id, "request_showdown", None).await?;
 
     if state.mpc_config.node_endpoints.is_empty() {
         return Err(StatusCode::SERVICE_UNAVAILABLE);
@@ -723,8 +709,7 @@ pub async fn request_showdown(
     let mut tables = state.tables.write().await;
     let session = tables.get_mut(&table_id).ok_or(StatusCode::NOT_FOUND)?;
 
-    // Any authenticated caller may trigger showdown progression.
-    let _ = auth;
+    // Any caller may trigger showdown progression.
 
     if session.phase == "settlement" {
         let (status, winner, winner_index) =
@@ -1163,7 +1148,6 @@ async fn fetch_onchain_table_view(
 async fn resolve_deal_players_from_lobby(
     state: &AppState,
     table_id: u32,
-    caller: &str,
 ) -> Result<Vec<String>, StatusCode> {
     let view = fetch_onchain_table_view(&state.soroban_config, table_id)
         .await
@@ -1189,11 +1173,6 @@ async fn resolve_deal_players_from_lobby(
         return Err(StatusCode::CONFLICT);
     }
     validate_players(&ordered_players)?;
-
-    let caller_is_seated_on_chain = view.seats.iter().any(|(_, chain)| chain == caller);
-    if !ordered_players.iter().any(|p| p == caller) && !caller_is_seated_on_chain {
-        return Err(StatusCode::UNAUTHORIZED);
-    }
 
     Ok(ordered_players)
 }

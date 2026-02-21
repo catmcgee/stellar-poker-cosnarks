@@ -86,18 +86,26 @@ export default function Home() {
 
   const handleCreateTable = async (solo = false) => {
     if (!wallet) return;
-    const buyIn = parseXlmToStroops(buyInXlm);
-    if (buyIn === null || buyIn <= BigInt(0)) {
-      setError("Enter a valid buy-in amount in XLM");
-      return;
+    let buyIn: bigint | null = null;
+    if (!solo) {
+      buyIn = parseXlmToStroops(buyInXlm);
+      if (buyIn === null || buyIn <= BigInt(0)) {
+        setError("Enter a valid buy-in amount in XLM");
+        return;
+      }
     }
     setBusy(true);
     setError(null);
     try {
       const players = solo ? 2 : maxPlayers;
-      const created = await api.createTable(wallet, players, solo, buyIn.toString());
+      const created = await api.createTable(
+        wallet,
+        players,
+        solo,
+        buyIn ? buyIn.toString() : undefined
+      );
 
-      if (!solo) {
+      if (!solo && buyIn) {
         await joinTableOnChain(wallet, created.table_id, buyIn);
       }
 
@@ -437,24 +445,6 @@ export default function Home() {
               CREATE TABLE
             </h2>
 
-            <div className="w-full flex flex-col gap-2">
-              <div className="text-[10px]" style={{ color: "#c8e6ff" }}>
-                BUY-IN (XLM)
-              </div>
-              <input
-                type="text"
-                value={buyInXlm}
-                onChange={(e) => setBuyInXlm(e.target.value)}
-                placeholder="100"
-                disabled={busy}
-                className="w-full text-center text-[12px]"
-                style={{ padding: "8px 10px" }}
-              />
-              <div className="text-[9px]" style={{ color: "#95a5a6" }}>
-                Required table buy-in for each seat.
-              </div>
-            </div>
-
             <button
               onClick={() => void handleCreateTable(true)}
               disabled={busy || !wallet}
@@ -466,18 +456,13 @@ export default function Home() {
             >
               {busy ? "CREATING..." : "SOLO VS AI"}
             </button>
-
             <div
               className="w-full flex items-center gap-3"
               style={{ color: "#4a6a8a" }}
             >
               <div className="flex-1 h-[1px]" style={{ background: "#4a6a8a" }} />
-              <span className="text-[9px]">OR</span>
+              <span className="text-[9px]">MULTIPLAYER</span>
               <div className="flex-1 h-[1px]" style={{ background: "#4a6a8a" }} />
-            </div>
-
-            <div className="text-[10px]" style={{ color: "#c8e6ff" }}>
-              PLAYERS
             </div>
 
             <div className="flex gap-2">
@@ -497,6 +482,24 @@ export default function Home() {
                   {opt.label}
                 </button>
               ))}
+            </div>
+
+            <div className="w-full flex flex-col gap-2">
+              <div className="text-[10px]" style={{ color: "#c8e6ff" }}>
+                BUY-IN (XLM)
+              </div>
+              <input
+                type="text"
+                value={buyInXlm}
+                onChange={(e) => setBuyInXlm(e.target.value)}
+                placeholder="100"
+                disabled={busy}
+                className="w-full text-center text-[12px]"
+                style={{ padding: "8px 10px" }}
+              />
+              <div className="text-[9px]" style={{ color: "#95a5a6" }}>
+                Multiplayer only.
+              </div>
             </div>
 
             <button

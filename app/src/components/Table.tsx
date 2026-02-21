@@ -21,7 +21,6 @@ import { GameBoyButton, GameBoyModal } from "./GameBoyModal";
 
 type ActiveRequest = "deal" | "flop" | "turn" | "river" | "showdown" | null;
 type PlayMode = "single" | "headsup" | "multi";
-const SOLO_AUTO_ADVANCE = false;
 
 interface TableProps {
   tableId: number;
@@ -95,6 +94,15 @@ function mapOnChainPhase(phase: string): GamePhase | null {
   }
 }
 
+function deterministicPercent(seed: string): number {
+  let hash = 2166136261;
+  for (let i = 0; i < seed.length; i += 1) {
+    hash ^= seed.charCodeAt(i);
+    hash = Math.imul(hash, 16777619);
+  }
+  return (hash >>> 0) % 100;
+}
+
 export function Table({ tableId, initialPlayMode }: TableProps) {
   const [game, setGame] = useState<GameState>(() => createInitialState(tableId));
   const [wallet, setWallet] = useState<WalletSession | null>(null);
@@ -103,22 +111,27 @@ export function Table({ tableId, initialPlayMode }: TableProps) {
   const [loading, setLoading] = useState(false);
   const [joiningTable, setJoiningTable] = useState(false);
   const [activeRequest, setActiveRequest] = useState<ActiveRequest>(null);
-  const [, setOnChainPhase] = useState<string>("unknown");
+  const [onChainPhase, setOnChainPhase] = useState<string>("unknown");
   const [winnerAddress, setWinnerAddress] = useState<string | null>(null);
   const [lobby, setLobby] = useState<api.TableLobbyResponse | null>(null);
   const [botLine, setBotLine] = useState<string | null>(null);
   const [gameboyOpen, setGameboyOpen] = useState(false);
   const [elapsed, setElapsed] = useState(0);
-  const botTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const botStepRef = useRef<string>("");
-  const botRetriesRef = useRef<Record<string, number>>({});
+  const autoStreetRef = useRef<string>("");
   const inferredModeRef = useRef(false);
 
   const userAddress = wallet?.address;
   const userPlayer = userAddress
     ? game.players.find((p) => p.address === userAddress)
     : undefined;
-  const isMyTurn = !!userAddress && game.players[game.currentTurn]?.address === userAddress;
+  const isSoloBettingPhase =
+    playMode === "single" &&
+    ["preflop", "flop", "turn", "river"].includes(game.phase);
+  const onChainTurnAddress = game.players[game.currentTurn]?.address;
+  const displayedTurnAddress = isSoloBettingPhase
+    ? userAddress
+    : onChainTurnAddress;
+  const isMyTurn = !!userAddress && displayedTurnAddress === userAddress;
   const isWalletSeated = !!wallet && !!userPlayer;
   const seatedAddresses = game.players
     .filter((p) => isStellarAddress(p.address))
@@ -200,8 +213,14 @@ export function Table({ tableId, initialPlayMode }: TableProps) {
                 return {
                   address: normalizedAddress,
                   seat: toNumber(raw.seat_index, existing?.seat ?? index),
-                  stack: toNumber(raw.stack, existing?.stack ?? 0),
-                  betThisRound: toNumber(raw.bet_this_round, existing?.betThisRound ?? 0),
+                  stack:
+                    playMode === "single"
+                      ? existing?.stack ?? 100
+                      : toNumber(raw.stack, existing?.stack ?? 0),
+                  betThisRound:
+                    playMode === "single"
+                      ? existing?.betThisRound ?? 0
+                      : toNumber(raw.bet_this_round, existing?.betThisRound ?? 0),
                   folded: Boolean(raw.folded),
                   allIn: Boolean(raw.all_in),
                   cards: existing?.cards,
@@ -213,7 +232,7 @@ export function Table({ tableId, initialPlayMode }: TableProps) {
           ...prev,
           phase: mappedPhase ?? prev.phase,
           boardCards: boardCards ?? prev.boardCards,
-          pot: toNumber(parsed.pot, prev.pot),
+          pot: playMode === "single" ? prev.pot : toNumber(parsed.pot, prev.pot),
           currentTurn: toNumber(parsed.current_turn, prev.currentTurn),
           dealerSeat: toNumber(parsed.dealer_seat, prev.dealerSeat),
           handNumber: toNumber(parsed.hand_number, prev.handNumber),
@@ -223,7 +242,7 @@ export function Table({ tableId, initialPlayMode }: TableProps) {
     } catch {
       // Non-fatal; UI still works off latest known state.
     }
-  }, [tableId, userAddress]);
+  }, [playMode, tableId, userAddress]);
 
   const hydrateMyCards = useCallback(
     async (auth: WalletSession) => {
@@ -367,11 +386,19 @@ export function Table({ tableId, initialPlayMode }: TableProps) {
           phase: "preflop",
           boardCards: [],
           handNumber: prev.handNumber + 1,
+          pot: playMode === "single" ? 0 : prev.pot,
           lastTxHash: txHash,
           proofSize: result.proof_size,
           onChainConfirmed: !!txHash,
-          players:
-            players.length > 0
+          players: playMode === "single"
+            ? prev.players.map((p) => ({
+                ...p,
+                stack: 100,
+                betThisRound: 0,
+                folded: false,
+                allIn: false,
+              }))
+            : players.length > 0
               ? players.map((address, seat) => ({
                   address,
                   seat,
@@ -392,7 +419,7 @@ export function Table({ tableId, initialPlayMode }: TableProps) {
         setActiveRequest(null);
       }
     },
-    [hydrateMyCards, syncOnChainState, tableId, wallet]
+    [hydrateMyCards, playMode, syncOnChainState, tableId, wallet]
   );
 
   const handleReveal = useCallback(
@@ -419,9 +446,7 @@ export function Table({ tableId, initialPlayMode }: TableProps) {
         await syncOnChainState();
       } catch (e) {
         setError(e instanceof Error ? e.message : "Reveal failed");
-        if (playMode === "single") {
-          botStepRef.current = "";
-        }
+        autoStreetRef.current = "";
       } finally {
         setLoading(false);
         setActiveRequest(null);
@@ -473,9 +498,7 @@ export function Table({ tableId, initialPlayMode }: TableProps) {
       await syncOnChainState();
     } catch (e) {
       setError(e instanceof Error ? e.message : "Showdown failed");
-      if (playMode === "single") {
-        botStepRef.current = "";
-      }
+      autoStreetRef.current = "";
     } finally {
       setLoading(false);
       setActiveRequest(null);
@@ -496,7 +519,162 @@ export function Table({ tableId, initialPlayMode }: TableProps) {
       const bettingActions = ["fold", "check", "call", "bet", "raise", "allin"];
       if (bettingActions.includes(action)) {
         if (playMode === "single") {
-          console.log(`[single-player] betting action: ${action} (auto-handled by coordinator)`);
+          if (!wallet) {
+            setError("Connect Freighter wallet before betting");
+            return;
+          }
+
+          const me = game.players.find((p) => p.address === wallet.address);
+          const bot = game.players.find((p) => p.address !== wallet.address);
+          if (!me || !bot) {
+            setError("Waiting for solo seats to initialize");
+            return;
+          }
+
+          if (action === "fold") {
+            setWinnerAddress(bot.address);
+            setGame((prev) => ({
+              ...prev,
+              phase: "settlement",
+              players: prev.players.map((p) =>
+                p.address === me.address ? { ...p, folded: true } : p
+              ),
+            }));
+            return;
+          }
+
+          let userBet = me.betThisRound;
+          let botBet = bot.betThisRound;
+          let userStack = me.stack;
+          let botStack = bot.stack;
+          const botStackBefore = botStack;
+          let pot = game.pot;
+          const current = Math.max(userBet, botBet);
+          let userContribution = 0;
+
+          if (action === "call" || action === "check") {
+            const callAmount = Math.max(current - userBet, 0);
+            userContribution = Math.min(callAmount, userStack);
+            userBet += userContribution;
+            userStack -= userContribution;
+          } else if (action === "allin") {
+            userContribution = userStack;
+            userBet += userContribution;
+            userStack = 0;
+          } else if (action === "bet" || action === "raise") {
+            const normalizedAmount =
+              typeof amount === "number" && Number.isFinite(amount)
+                ? Math.max(1, Math.floor(amount))
+                : 1;
+            const targetBet = Math.max(current, normalizedAmount);
+            userContribution = Math.max(0, Math.min(targetBet - userBet, userStack));
+            userBet += userContribution;
+            userStack -= userContribution;
+          }
+
+          let botContribution = 0;
+          const neededByBot = Math.max(userBet - botBet, 0);
+          let aiAction: "check" | "call" | "fold";
+          if (neededByBot === 0) {
+            aiAction = "check";
+          } else {
+            const pressure = neededByBot / Math.max(1, botStack + pot);
+            const roll = deterministicPercent(
+              `${tableId}:${game.handNumber}:${game.phase}:${game.boardCards.join(",")}:${neededByBot}:${botStack}`
+            );
+            if (
+              (pressure > 0.7 && roll < 85) ||
+              (pressure > 0.45 && roll < 55) ||
+              (pressure > 0.25 && roll < 25)
+            ) {
+              aiAction = "fold";
+            } else {
+              aiAction = "call";
+            }
+          }
+
+          if (aiAction === "call" && neededByBot > 0) {
+            botContribution = Math.min(neededByBot, botStack);
+            botBet += botContribution;
+            botStack -= botContribution;
+          }
+
+          pot += userContribution + botContribution;
+          if (aiAction === "fold") {
+            setWinnerAddress(me.address);
+            setBotLine("AI folds. You win the pot.");
+            setGame((prev) => ({
+              ...prev,
+              phase: "settlement",
+              pot,
+              players: prev.players.map((p) => {
+                if (p.address === me.address) {
+                  return {
+                    ...p,
+                    stack: userStack,
+                    betThisRound: 0,
+                    allIn: userStack <= 0,
+                  };
+                }
+                if (p.address === bot.address) {
+                  return {
+                    ...p,
+                    stack: botStack,
+                    betThisRound: 0,
+                    folded: true,
+                    allIn: botStack <= 0,
+                  };
+                }
+                return p;
+              }),
+            }));
+            return;
+          }
+
+          const aiLine =
+            aiAction === "check"
+              ? "AI checks."
+              : botContribution >= botStackBefore
+                ? "AI calls all-in."
+                : "AI calls.";
+          setGame((prev) => ({
+            ...prev,
+            pot,
+            players: prev.players.map((p) => {
+              if (p.address === me.address) {
+                return {
+                  ...p,
+                  stack: userStack,
+                  betThisRound: 0,
+                  allIn: userStack <= 0,
+                };
+              }
+              if (p.address === bot.address) {
+                return {
+                  ...p,
+                  stack: botStack,
+                  betThisRound: 0,
+                  allIn: botStack <= 0,
+                };
+              }
+              return p;
+            }),
+          }));
+
+          const step = game.phase;
+          if (step === "preflop") {
+            setBotLine(`${aiLine} Dealer reveals the flop...`);
+            void handleReveal("flop");
+          } else if (step === "flop") {
+            setBotLine(`${aiLine} Dealer reveals the turn...`);
+            void handleReveal("turn");
+          } else if (step === "turn") {
+            setBotLine(`${aiLine} Dealer reveals the river...`);
+            void handleReveal("river");
+          } else if (step === "river") {
+            setBotLine(`${aiLine} Dealer runs showdown...`);
+            void handleShowdown();
+          }
           return;
         }
         if (!wallet) {
@@ -526,7 +704,7 @@ export function Table({ tableId, initialPlayMode }: TableProps) {
       }
 
       if (action !== "start") {
-        setError("Use the DEAL/REVEAL/SHOWDOWN controls on the table.");
+        setError("Use the betting controls on the table.");
         return;
       }
 
@@ -536,14 +714,26 @@ export function Table({ tableId, initialPlayMode }: TableProps) {
       }
       await handleDeal(players);
     },
-    [wallet, playMode, syncOnChainState, tableId, resolvePlayersForDeal, handleDeal, handleShowdown]
+    [
+      game.phase,
+      game.players,
+      game.pot,
+      wallet,
+      playMode,
+      syncOnChainState,
+      tableId,
+      resolvePlayersForDeal,
+      handleDeal,
+      handleReveal,
+      handleShowdown,
+    ]
   );
 
   const currentBet = Math.max(...game.players.map((p) => p.betThisRound), 0);
-  const displayCurrentBet = playMode === "single" ? 0 : currentBet;
-  const displayPot = playMode === "single" ? 0 : game.pot;
-  const displayMyBet = playMode === "single" ? 0 : userPlayer?.betThisRound || 0;
-  const displayMyStack = playMode === "single" ? 0 : userPlayer?.stack || 0;
+  const displayCurrentBet = currentBet;
+  const displayPot = game.pot;
+  const displayMyBet = userPlayer?.betThisRound || 0;
+  const displayMyStack = userPlayer?.stack || 0;
   const canStartHand = !!wallet && isWalletSeated;
   const seatStatusHint =
     wallet && !isWalletSeated && seatedAddresses.length > 0
@@ -551,79 +741,45 @@ export function Table({ tableId, initialPlayMode }: TableProps) {
       : null;
 
   useEffect(() => {
-    return () => {
-      if (botTimerRef.current) {
-        clearTimeout(botTimerRef.current);
-      }
-    };
-  }, []);
-
-  useEffect(() => {
-    if (playMode !== "single" || !wallet || loading || !SOLO_AUTO_ADVANCE) {
+    if (!wallet || loading) {
       return;
     }
 
-    const stepKey = `${game.handNumber}:${game.phase}`;
-    let line: string | null = null;
-    let action: (() => Promise<void>) | null = null;
+    const key = `${game.handNumber}:${onChainPhase}`;
+    let next: (() => Promise<void>) | null = null;
 
-    switch (game.phase) {
-      case "preflop":
-        line = "Bot checks. Dealing flop...";
-        action = async () => handleReveal("flop");
+    switch (onChainPhase) {
+      case "DealingFlop":
+        next = async () => handleReveal("flop");
         break;
-      case "flop":
-        line = "Bot checks again. Dealing turn...";
-        action = async () => handleReveal("turn");
+      case "DealingTurn":
+        next = async () => handleReveal("turn");
         break;
-      case "turn":
-        line = "Bot checks again. Dealing river...";
-        action = async () => handleReveal("river");
+      case "DealingRiver":
+        next = async () => handleReveal("river");
         break;
-      case "river":
-        line = "Bot always calls/checks. Going to showdown...";
-        action = handleShowdown;
+      case "Showdown":
+        next = handleShowdown;
         break;
-      case "showdown":
-        line = "Bot tabled hand. Verifying showdown...";
-        action = null;
-        break;
-      case "settlement":
-      case "waiting":
-        botStepRef.current = "";
-        botRetriesRef.current = {};
-        setBotLine(null);
+      case "Waiting":
+      case "Settlement":
+      case "Preflop":
+      case "Flop":
+      case "Turn":
+      case "River":
+      case "Dealing":
+        autoStreetRef.current = "";
         return;
       default:
         return;
     }
 
-    setBotLine(line);
-    if (!action) {
+    if (!next || autoStreetRef.current === key) {
       return;
     }
-
-    if (botStepRef.current === stepKey) {
-      return;
-    }
-
-    const tries = botRetriesRef.current[stepKey] ?? 0;
-    if (tries >= 2) {
-      setBotLine("Bot paused after retries. Use the phase button once to continue.");
-      return;
-    }
-
-    botStepRef.current = stepKey;
-    botRetriesRef.current[stepKey] = tries + 1;
-
-    if (botTimerRef.current) {
-      clearTimeout(botTimerRef.current);
-    }
-
-    botTimerRef.current = setTimeout(() => {
-      void action();
-    }, 350);
-  }, [game.handNumber, game.phase, handleReveal, handleShowdown, loading, playMode, wallet]);
+    autoStreetRef.current = key;
+    void next();
+  }, [game.handNumber, handleReveal, handleShowdown, loading, onChainPhase, wallet]);
 
   const formatElapsed = (s: number) => {
     const m = Math.floor(s / 60);
@@ -650,8 +806,21 @@ export function Table({ tableId, initialPlayMode }: TableProps) {
       }
     }
 
-    if (playMode === "single" && SOLO_AUTO_ADVANCE && botLine && game.phase !== "waiting") {
+    if (playMode === "single" && botLine && game.phase !== "waiting") {
       return `${botLine}`;
+    }
+
+    if (onChainPhase === "DealingFlop") {
+      return "Betting round complete. Dealer is revealing the flop...";
+    }
+    if (onChainPhase === "DealingTurn") {
+      return "Betting round complete. Dealer is revealing the turn...";
+    }
+    if (onChainPhase === "DealingRiver") {
+      return "Betting round complete. Dealer is revealing the river...";
+    }
+    if (onChainPhase === "Showdown") {
+      return "Betting complete. Dealer is resolving showdown...";
     }
 
     if (playMode !== "single" && wallet && !isWalletSeated && seatedAddresses.length > 0) {
@@ -661,7 +830,7 @@ export function Table({ tableId, initialPlayMode }: TableProps) {
     switch (game.phase) {
       case "waiting":
         if (playMode === "single") {
-          return "Solo mode: betting is disabled and auto-progression is OFF. Use DEAL/REVEAL/SHOWDOWN buttons.";
+          return "Solo vs AI uses fake chips (100 each). Click DEAL CARDS to start.";
         }
         if (playMode === "headsup") {
           if ((lobby?.joined_wallets ?? 0) < 2) {
@@ -676,13 +845,13 @@ export function Table({ tableId, initialPlayMode }: TableProps) {
       case "dealing":
         return "Cards are being dealt.";
       case "preflop":
-        return "Preflop is live. Click DEAL FLOP when ready.";
+        return "Preflop is live. Place your bet; dealer auto-reveals next street.";
       case "flop":
-        return "Flop is out. Click DEAL TURN.";
+        return "Flop is out. Place your bet; dealer auto-reveals turn.";
       case "turn":
-        return "Turn card is out. Click DEAL RIVER.";
+        return "Turn is out. Place your bet; dealer auto-reveals river.";
       case "river":
-        return "River is out. Click SHOWDOWN.";
+        return "River is out. Final betting round; dealer auto-runs showdown.";
       case "showdown":
         return "Showdown in progress.";
       case "settlement":
@@ -868,12 +1037,12 @@ export function Table({ tableId, initialPlayMode }: TableProps) {
                   <PlayerSeat
                     key={player.address}
                     player={player}
-                    isCurrentTurn={game.players[game.currentTurn]?.address === player.address}
+                    isCurrentTurn={displayedTurnAddress === player.address}
                     isDealer={player.seat === game.dealerSeat}
                     isUser={false}
                     isWinner={!!winnerAddress && player.address === winnerAddress}
                     isBot={playMode === "single"}
-                    hideChipStats={playMode === "single"}
+                    hideChipStats={false}
                   />
                 ))}
 
@@ -906,58 +1075,32 @@ export function Table({ tableId, initialPlayMode }: TableProps) {
             }}>
               <Board cards={game.boardCards} pot={displayPot} />
 
-              {/* Phase action buttons */}
-              <div className="flex gap-2 mt-1">
-                {game.phase === "waiting" && wallet && !isWalletSeated && playMode !== "single" && (
-                  <button
-                    onClick={() => void handleJoinTable()}
-                    disabled={loading || joiningTable}
-                    className="pixel-btn pixel-btn-blue text-[9px]"
-                    style={{ padding: "6px 14px", opacity: loading || joiningTable ? 0.7 : 1 }}
-                  >
-                    {joiningTable ? "JOINING..." : "JOIN TABLE"}
-                  </button>
-                )}
-                {game.phase === "preflop" && (
-                  <button
-                    onClick={() => handleReveal("flop")}
-                    disabled={loading || !wallet}
-                    className="pixel-btn pixel-btn-dark text-[9px]"
-                    style={{ padding: "6px 14px", opacity: loading || !wallet ? 0.7 : 1 }}
-                  >
-                    DEAL FLOP
-                  </button>
-                )}
-                {game.phase === "flop" && (
-                  <button
-                    onClick={() => handleReveal("turn")}
-                    disabled={loading || !wallet}
-                    className="pixel-btn pixel-btn-dark text-[9px]"
-                    style={{ padding: "6px 14px", opacity: loading || !wallet ? 0.7 : 1 }}
-                  >
-                    DEAL TURN
-                  </button>
-                )}
-                {game.phase === "turn" && (
-                  <button
-                    onClick={() => handleReveal("river")}
-                    disabled={loading || !wallet}
-                    className="pixel-btn pixel-btn-dark text-[9px]"
-                    style={{ padding: "6px 14px", opacity: loading || !wallet ? 0.7 : 1 }}
-                  >
-                    DEAL RIVER
-                  </button>
-                )}
-                {(game.phase === "river" || game.phase === "showdown") && (
-                  <button
-                    onClick={handleShowdown}
-                    disabled={loading || !wallet}
-                    className="pixel-btn pixel-btn-gold text-[9px]"
-                    style={{ padding: "6px 14px", opacity: loading || !wallet ? 0.7 : 1 }}
-                  >
-                    {game.phase === "showdown" ? "RESOLVE SHOWDOWN (2-4 MIN)" : "SHOWDOWN (2-4 MIN)"}
-                  </button>
-                )}
+              {game.phase === "waiting" && wallet && !isWalletSeated && playMode !== "single" && (
+                <button
+                  onClick={() => void handleJoinTable()}
+                  disabled={loading || joiningTable}
+                  className="pixel-btn pixel-btn-blue text-[9px]"
+                  style={{ padding: "6px 14px", opacity: loading || joiningTable ? 0.7 : 1 }}
+                >
+                  {joiningTable ? "JOINING..." : "JOIN TABLE"}
+                </button>
+              )}
+
+              <div className="w-full max-w-xl mt-1">
+                <ActionPanel
+                  phase={game.phase}
+                  isMyTurn={isMyTurn}
+                  currentBet={displayCurrentBet}
+                  myBet={displayMyBet}
+                  myStack={displayMyStack}
+                  onAction={handleAction}
+                  onChainConfirmed={game.onChainConfirmed}
+                  canStartHand={canStartHand}
+                  canResolveShowdown={!!wallet}
+                  statusHint={seatStatusHint}
+                  loading={loading}
+                  isSolo={playMode === "single"}
+                />
               </div>
             </div>
 
@@ -970,7 +1113,7 @@ export function Table({ tableId, initialPlayMode }: TableProps) {
                   isDealer={userPlayer.seat === game.dealerSeat}
                   isUser={true}
                   isWinner={!!winnerAddress && userPlayer.address === winnerAddress}
-                  hideChipStats={playMode === "single"}
+                  hideChipStats={false}
                 />
               ) : (
                 <div className="flex flex-col items-center gap-2" style={{ opacity: 0.25 }}>
@@ -986,24 +1129,6 @@ export function Table({ tableId, initialPlayMode }: TableProps) {
               )}
             </div>
           </div>
-        </div>
-
-        {/* Action panel */}
-        <div className="w-full max-w-3xl">
-          <ActionPanel
-            phase={game.phase}
-            isMyTurn={isMyTurn}
-            currentBet={displayCurrentBet}
-            myBet={displayMyBet}
-            myStack={displayMyStack}
-            onAction={handleAction}
-            onChainConfirmed={game.onChainConfirmed}
-            canStartHand={canStartHand}
-            canResolveShowdown={!!wallet}
-            statusHint={seatStatusHint}
-            loading={loading}
-            isSolo={playMode === "single"}
-          />
         </div>
 
         {/* MPC Status footer */}

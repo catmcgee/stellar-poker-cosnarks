@@ -218,9 +218,9 @@ async function authedFetch(
 export async function requestDeal(
   tableId: number,
   players: string[] = [],
-  auth: AuthSigner
+  _auth: AuthSigner
 ): Promise<DealResponse> {
-  const res = await authedFetch(
+  const res = await fetch(
     `${API_BASE}/api/table/${tableId}/request-deal`,
     {
       method: "POST",
@@ -228,10 +228,7 @@ export async function requestDeal(
         "Content-Type": "application/json",
       },
       body: JSON.stringify({ players }),
-    },
-    tableId,
-    "request_deal",
-    auth
+    }
   );
   if (!res.ok) {
     throw new Error(await readApiError(res, `Deal failed: ${res.status}`));
@@ -324,16 +321,13 @@ export async function getTableLobby(
 export async function requestReveal(
   tableId: number,
   phase: "flop" | "turn" | "river",
-  auth: AuthSigner
+  _auth: AuthSigner
 ): Promise<RevealResponse> {
-  const res = await authedFetch(
+  const res = await fetch(
     `${API_BASE}/api/table/${tableId}/request-reveal/${phase}`,
     {
       method: "POST",
-    },
-    tableId,
-    `request_reveal:${phase}`,
-    auth
+    }
   );
   if (!res.ok) {
     throw new Error(await readApiError(res, `Reveal failed: ${res.status}`));
@@ -343,16 +337,13 @@ export async function requestReveal(
 
 export async function requestShowdown(
   tableId: number,
-  auth: AuthSigner
+  _auth: AuthSigner
 ): Promise<ShowdownResponse> {
-  const res = await authedFetch(
+  const res = await fetch(
     `${API_BASE}/api/table/${tableId}/request-showdown`,
     {
       method: "POST",
-    },
-    tableId,
-    "request_showdown",
-    auth
+    }
   );
   if (!res.ok) {
     throw new Error(await readApiError(res, `Showdown failed: ${res.status}`));
