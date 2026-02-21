@@ -48,6 +48,46 @@ export interface CommitteeStatusResponse {
   status: string;
 }
 
+export interface CreateTableResponse {
+  table_id: number;
+  max_players: number;
+  joined_wallets: number;
+}
+
+export interface JoinTableResponse {
+  table_id: number;
+  seat_index: number;
+  seat_address: string;
+  joined_wallets: number;
+  max_players: number;
+}
+
+export interface OpenTableInfo {
+  table_id: number;
+  phase: string;
+  max_players: number;
+  joined_wallets: number;
+  open_wallet_slots: number;
+}
+
+export interface OpenTablesResponse {
+  tables: OpenTableInfo[];
+}
+
+export interface LobbySeat {
+  seat_index: number;
+  chain_address: string;
+  wallet_address: string | null;
+}
+
+export interface TableLobbyResponse {
+  table_id: number;
+  phase: string;
+  max_players: number;
+  seats: LobbySeat[];
+  joined_wallets: number;
+}
+
 export interface AuthSigner {
   address: string;
   signMessage: (message: string) => Promise<string>;
@@ -110,7 +150,7 @@ async function buildAuthHeaders(
 
 export async function requestDeal(
   tableId: number,
-  players: string[],
+  players: string[] = [],
   auth: AuthSigner
 ): Promise<DealResponse> {
   const headers = await buildAuthHeaders(tableId, "request_deal", auth);
@@ -125,6 +165,58 @@ export async function requestDeal(
   });
   if (!res.ok) {
     throw new Error(await readApiError(res, `Deal failed: ${res.status}`));
+  }
+  return res.json();
+}
+
+export async function createTable(
+  auth: AuthSigner,
+  maxPlayers: number
+): Promise<CreateTableResponse> {
+  const headers = await buildAuthHeaders(0, "create_table", auth);
+  const res = await fetch(`${API_BASE}/api/tables/create`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      ...headers,
+    },
+    body: JSON.stringify({ max_players: maxPlayers }),
+  });
+  if (!res.ok) {
+    throw new Error(await readApiError(res, `Create table failed: ${res.status}`));
+  }
+  return res.json();
+}
+
+export async function joinTable(
+  tableId: number,
+  auth: AuthSigner
+): Promise<JoinTableResponse> {
+  const headers = await buildAuthHeaders(tableId, "join_table", auth);
+  const res = await fetch(`${API_BASE}/api/table/${tableId}/join`, {
+    method: "POST",
+    headers,
+  });
+  if (!res.ok) {
+    throw new Error(await readApiError(res, `Join table failed: ${res.status}`));
+  }
+  return res.json();
+}
+
+export async function listOpenTables(): Promise<OpenTablesResponse> {
+  const res = await fetch(`${API_BASE}/api/tables/open`);
+  if (!res.ok) {
+    throw new Error(await readApiError(res, `Open tables failed: ${res.status}`));
+  }
+  return res.json();
+}
+
+export async function getTableLobby(
+  tableId: number
+): Promise<TableLobbyResponse> {
+  const res = await fetch(`${API_BASE}/api/table/${tableId}/lobby`);
+  if (!res.ok) {
+    throw new Error(await readApiError(res, `Lobby lookup failed: ${res.status}`));
   }
   return res.json();
 }

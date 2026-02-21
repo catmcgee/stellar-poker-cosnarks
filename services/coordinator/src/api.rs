@@ -1000,12 +1000,12 @@ async fn resolve_deal_players_from_lobby(
 
     let mut ordered_players = Vec::new();
     for (_, chain_address) in &view.seats {
-        if let Some((wallet, _)) = table_lobby
+        let logical = table_lobby
             .iter()
             .find(|(_, mapped_chain)| *mapped_chain == chain_address)
-        {
-            ordered_players.push(wallet.clone());
-        }
+            .map(|(wallet, _)| wallet.clone())
+            .unwrap_or_else(|| chain_address.clone());
+        ordered_players.push(logical);
     }
 
     if ordered_players.len() < MIN_PLAYERS {

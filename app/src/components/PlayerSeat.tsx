@@ -2,7 +2,7 @@
 
 import { Card } from "./Card";
 import { PixelCat, opponentSprite } from "./PixelCat";
-import { PixelChipStack } from "./PixelChip";
+import { PixelChip } from "./PixelChip";
 import type { Player } from "@/lib/game-state";
 
 interface PlayerSeatProps {
@@ -34,7 +34,7 @@ export function PlayerSeat({
       {isCurrentTurn && !player.folded && (
         <div style={{
           animation: 'textPulse 1s ease-in-out infinite',
-          fontSize: '7px',
+          fontSize: '9px',
           color: '#f1c40f',
           textShadow: '1px 1px 0 rgba(0,0,0,0.6)',
           whiteSpace: 'nowrap',
@@ -47,7 +47,7 @@ export function PlayerSeat({
       {/* Winner badge */}
       {isWinner && (
         <div style={{
-          fontSize: "7px",
+          fontSize: "9px",
           color: "#f1c40f",
           textShadow: "1px 1px 0 rgba(0,0,0,0.6)",
           marginBottom: '2px',
@@ -57,11 +57,11 @@ export function PlayerSeat({
       )}
 
       {/* Label */}
-      <div className="text-[7px] mb-1" style={{
+      <div className="text-[9px] mb-1" style={{
         color: isUser ? '#f1c40f' : '#95a5a6',
         textShadow: '1px 1px 0 rgba(0,0,0,0.5)',
       }}>
-        {isUser ? "— YOU —" : `${player.address.slice(0, 6)}...`}
+        {isUser ? "— YOU —" : `${player.address.slice(0, 4)}...${player.address.slice(-4)}`}
         {isDealer && <span style={{ color: '#f1c40f', marginLeft: '4px' }}>[D]</span>}
       </div>
 
@@ -89,10 +89,10 @@ export function PlayerSeat({
         )}
       </div>
 
-      {/* Stack with chip visuals */}
-      <div className="flex items-center gap-2 mt-1">
-        <PixelChipStack amount={player.stack} size={isUser ? 2 : 1} />
-        <span className="text-[8px]" style={{
+      {/* Stack */}
+      <div className="flex items-center gap-1 mt-1">
+        <PixelChip color={player.stack >= 5000 ? "gold" : player.stack >= 500 ? "blue" : "red"} size={isUser ? 2 : 1} />
+        <span className="text-[10px]" style={{
           color: '#27ae60',
           textShadow: '1px 1px 0 rgba(0,0,0,0.4)',
         }}>
@@ -100,7 +100,7 @@ export function PlayerSeat({
         </span>
       </div>
 
-      {/* Bet with chip visuals */}
+      {/* Bet */}
       {player.betThisRound > 0 && (
         <div
           className="flex items-center gap-1"
@@ -108,19 +108,19 @@ export function PlayerSeat({
             animation: "chipBounce 0.4s ease-out",
           }}
         >
-          <PixelChipStack amount={player.betThisRound} size={1} />
-          <span className="text-[7px]" style={{ color: '#f1c40f' }}>
-            BET: {player.betThisRound}
+          <PixelChip color="gold" size={1} />
+          <span className="text-[9px]" style={{ color: '#f1c40f' }}>
+            BET: {player.betThisRound.toLocaleString()}
           </span>
         </div>
       )}
 
       {/* Status tags */}
       {player.folded && (
-        <div className="text-[7px]" style={{ color: '#e74c3c' }}>FOLDED</div>
+        <div className="text-[9px]" style={{ color: '#e74c3c' }}>FOLDED</div>
       )}
       {player.allIn && (
-        <div className="text-[7px]" style={{
+        <div className="text-[9px]" style={{
           color: '#e67e22',
           animation: 'textPulse 0.8s ease-in-out infinite',
         }}>

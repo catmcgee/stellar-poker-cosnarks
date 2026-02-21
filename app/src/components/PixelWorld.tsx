@@ -1,30 +1,88 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 
 /**
- * PixelWorld — immersive background with day/night toggle.
+ * PixelWorld — immersive background with day/night toggle and ambient music.
  * Click the sun to transition to night (crescent moon, stars, dark sky).
- * Click the moon to return to day. All transitions are smooth 2s eases.
+ * Click the moon to return to day. Music crossfades with the visual transition.
  */
-export function PixelWorld({ children, autoNight = false }: { children: React.ReactNode; autoNight?: boolean }) {
+export function PixelWorld({ children }: { children: React.ReactNode }) {
   const [isNight, setIsNight] = useState(false);
-  const [slowTransition, setSlowTransition] = useState(false);
+  const dayAudioRef = useRef<HTMLAudioElement | null>(null);
+  const nightAudioRef = useRef<HTMLAudioElement | null>(null);
+  const fadeRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const musicStartedRef = useRef(false);
 
+  const FADE_MS = 2000; // matches visual transition duration
+  const FADE_STEP = 50; // ms per volume tick
+
+  // Create audio elements once on mount
   useEffect(() => {
-    if (autoNight && !isNight) {
-      const timer = setTimeout(() => {
-        setSlowTransition(true);
-        setIsNight(true);
-      }, 3000);
-      return () => clearTimeout(timer);
-    }
-  }, [autoNight]);
+    const day = new Audio("/music/day-music.mp3");
+    day.loop = true;
+    day.volume = 1;
+    const night = new Audio("/music/night-music.mp3");
+    night.loop = true;
+    night.volume = 0;
+    dayAudioRef.current = day;
+    nightAudioRef.current = night;
 
-  const duration = slowTransition ? '6s' : '2s';
+    return () => {
+      day.pause();
+      night.pause();
+      day.src = "";
+      night.src = "";
+    };
+  }, []);
+
+  // Crossfade when isNight changes
+  const crossfade = useCallback((toNight: boolean) => {
+    const fadeIn = toNight ? nightAudioRef.current : dayAudioRef.current;
+    const fadeOut = toNight ? dayAudioRef.current : nightAudioRef.current;
+    if (!fadeIn || !fadeOut) return;
+
+    // Start the incoming track if paused
+    fadeIn.play().catch(() => {});
+
+    if (fadeRef.current) clearInterval(fadeRef.current);
+    const steps = FADE_MS / FADE_STEP;
+    let step = 0;
+
+    fadeRef.current = setInterval(() => {
+      step++;
+      const progress = Math.min(step / steps, 1);
+      fadeIn.volume = Math.min(progress, 1);
+      fadeOut.volume = Math.max(1 - progress, 0);
+
+      if (step >= steps) {
+        if (fadeRef.current) clearInterval(fadeRef.current);
+        fadeRef.current = null;
+        fadeOut.pause();
+        fadeOut.currentTime = 0;
+      }
+    }, FADE_STEP);
+  }, []);
+
+  // Start music on first user click anywhere in the world
+  const handleFirstInteraction = useCallback(() => {
+    if (musicStartedRef.current) return;
+    musicStartedRef.current = true;
+    const active = isNight ? nightAudioRef.current : dayAudioRef.current;
+    const inactive = isNight ? dayAudioRef.current : nightAudioRef.current;
+    if (active) {
+      active.volume = 1;
+      active.play().catch(() => {});
+    }
+    if (inactive) {
+      inactive.volume = 0;
+    }
+  }, [isNight]);
+
+  const duration = '2s';
 
   return (
-    <div className="relative min-h-screen overflow-hidden">
+    <div className="relative min-h-screen overflow-hidden" onClick={handleFirstInteraction}>
       {/* Day sky */}
       <div className="absolute inset-0" style={{
         background: 'linear-gradient(180deg, #4a90d9 0%, #6bb3e0 40%, #87ceeb 70%, #a8dcf0 100%)',
@@ -40,7 +98,13 @@ export function PixelWorld({ children, autoNight = false }: { children: React.Re
       {/* Sun / Moon — click to toggle day/night */}
       <div
         className="absolute top-8 right-16 z-[15] cursor-pointer"
-        onClick={(e) => { e.stopPropagation(); setSlowTransition(false); setIsNight(n => !n); }}
+        onClick={(e) => {
+          e.stopPropagation();
+          handleFirstInteraction();
+          const next = !isNight;
+          setIsNight(next);
+          crossfade(next);
+        }}
         title={isNight ? "Switch to day" : "Switch to night"}
         style={{
           width: '64px',
@@ -125,8 +189,8 @@ export function PixelWorld({ children, autoNight = false }: { children: React.Re
       }}>
         <svg viewBox="0 0 1200 200" preserveAspectRatio="none" className="w-full h-full">
           <defs>
-            <pattern id="farGrass" width="160" height="160" patternUnits="userSpaceOnUse">
-              {grassTiles(['#5cb85c','#4cae4c','#68c468','#489848','#55b055','#6ed66e','#3d8b3d'], 20, 8, 3)}
+            <pattern id="farGrass" width="128" height="128" patternUnits="userSpaceOnUse">
+              {grassTiles(['#5cb85c','#4cae4c','#68c468','#489848','#55b055','#6ed66e','#3d8b3d'], 8, 16, 3)}
             </pattern>
           </defs>
           <path d="M0,120 Q150,40 300,100 Q450,50 600,90 Q750,30 900,80 Q1050,50 1200,70 L1200,200 L0,200 Z"
@@ -142,8 +206,8 @@ export function PixelWorld({ children, autoNight = false }: { children: React.Re
       }}>
         <svg viewBox="0 0 1200 160" preserveAspectRatio="none" className="w-full h-full">
           <defs>
-            <pattern id="midGrass" width="160" height="160" patternUnits="userSpaceOnUse">
-              {grassTiles(['#4cae4c','#3d8b3d','#5cb85c','#2d6b2d','#45a845','#6ed66e','#358435','#8bc34a'], 20, 8, 7)}
+            <pattern id="midGrass" width="128" height="128" patternUnits="userSpaceOnUse">
+              {grassTiles(['#4cae4c','#3d8b3d','#5cb85c','#2d6b2d','#45a845','#6ed66e','#358435','#8bc34a'], 8, 16, 7)}
             </pattern>
           </defs>
           <path d="M0,80 Q100,30 250,70 Q400,20 550,60 Q700,10 850,55 Q1000,25 1200,50 L1200,160 L0,160 Z"
@@ -159,8 +223,8 @@ export function PixelWorld({ children, autoNight = false }: { children: React.Re
       }}>
         <svg viewBox="0 0 1200 100" preserveAspectRatio="none" className="w-full h-full">
           <defs>
-            <pattern id="fgGrass" width="160" height="160" patternUnits="userSpaceOnUse">
-              {grassTiles(['#3d8b3d','#2d6b2d','#4cae4c','#27ae60','#358535','#5cb85c','#1e7a2e','#45a845'], 20, 8, 11)}
+            <pattern id="fgGrass" width="128" height="128" patternUnits="userSpaceOnUse">
+              {grassTiles(['#3d8b3d','#2d6b2d','#4cae4c','#27ae60','#358535','#5cb85c','#1e7a2e','#45a845'], 8, 16, 11)}
             </pattern>
           </defs>
           <rect width="1200" height="100" fill="url(#fgGrass)" />
@@ -189,15 +253,37 @@ export function PixelWorld({ children, autoNight = false }: { children: React.Re
   );
 }
 
-/* Deterministic mosaic tile generator for grass/hills */
+/* Deterministic mosaic tile generator for grass/hills.
+ * Uses larger blocks and clumps adjacent tiles to the same color
+ * so the result looks organic rather than noisy. */
 function grassTiles(colors: string[], blockSize: number, gridSize: number, seed: number) {
+  // Pre-compute a color grid with large organic patches.
+  // High neighbor-copy probability creates natural-looking clumps.
+  const grid: number[][] = [];
+  for (let y = 0; y < gridSize; y++) {
+    grid[y] = [];
+    for (let x = 0; x < gridSize; x++) {
+      const hash = ((x * 11 + y * 17 + x * y * 5 + seed) * 31 + seed * 7) & 0xffff;
+      const roll = hash % 100;
+      // ~60% copy left, ~22% copy above, ~8% copy diagonal — only ~10% picks a new color
+      if (x > 0 && roll < 60) {
+        grid[y][x] = grid[y][x - 1];
+      } else if (y > 0 && roll < 82) {
+        grid[y][x] = grid[y - 1][x];
+      } else if (x > 0 && y > 0 && roll < 90) {
+        grid[y][x] = grid[y - 1][x - 1];
+      } else {
+        grid[y][x] = ((hash >> 3) % colors.length + colors.length) % colors.length;
+      }
+    }
+  }
+
   const rects = [];
   for (let y = 0; y < gridSize; y++) {
     for (let x = 0; x < gridSize; x++) {
-      const idx = ((x * 11 + y * 17 + x * y * 5 + seed) % colors.length + colors.length) % colors.length;
       rects.push(
         <rect key={`${x}-${y}`} x={x * blockSize} y={y * blockSize}
-              width={blockSize} height={blockSize} fill={colors[idx]} />
+              width={blockSize} height={blockSize} fill={colors[grid[y][x]]} />
       );
     }
   }
@@ -226,7 +312,7 @@ function PixelCloud({ top, delay, speed, size }: { top: number; delay: number; s
   shape.forEach((row, y) => {
     for (let x = 0; x < row.length; x++) {
       const ch = row[x];
-      if (c[ch]) shadows.push(`${x * p}px ${y * p}px 0 ${c[ch]}`);
+      if (c[ch]) shadows.push(`${x * p}px ${y * p}px 0 0.5px ${c[ch]}`);
     }
   });
 

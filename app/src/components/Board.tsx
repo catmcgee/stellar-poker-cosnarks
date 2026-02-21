@@ -14,7 +14,7 @@ export function Board({ cards, pot }: BoardProps) {
       {/* Pot display */}
       <div className="flex items-center gap-2">
         <PotChipPile amount={pot} size={2} />
-        <span className="text-[10px]" style={{
+        <span className="text-[12px]" style={{
           color: '#f1c40f',
           textShadow: '1px 1px 0 rgba(0,0,0,0.6)',
           marginLeft: '4px',

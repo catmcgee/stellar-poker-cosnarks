@@ -12,14 +12,18 @@ import { PixelChip } from "./PixelChip";
 import type { GameState, GamePhase } from "@/lib/game-state";
 import { createInitialState } from "@/lib/game-state";
 import * as api from "@/lib/api";
-import { connectFreighterWallet, type WalletSession } from "@/lib/freighter";
-
-interface TableProps {
-  tableId: number;
-}
+import {
+  trySilentReconnect,
+  type WalletSession,
+} from "@/lib/freighter";
 
 type ActiveRequest = "deal" | "flop" | "turn" | "river" | "showdown" | null;
 type PlayMode = "single" | "headsup" | "multi";
+
+interface TableProps {
+  tableId: number;
+  initialPlayMode?: PlayMode;
+}
 
 function isStellarAddress(address: string): boolean {
   return /^G[A-Z2-7]{55}$/.test(address.trim());
@@ -73,19 +77,19 @@ function mapOnChainPhase(phase: string): GamePhase | null {
   }
 }
 
-export function Table({ tableId }: TableProps) {
+export function Table({ tableId, initialPlayMode }: TableProps) {
   const [game, setGame] = useState<GameState>(() => createInitialState(tableId));
   const [wallet, setWallet] = useState<WalletSession | null>(null);
-  const [opponentAddress, setOpponentAddress] = useState("");
-  const [multiOpponents, setMultiOpponents] = useState<string[]>(["", ""]);
-  const [playMode, setPlayMode] = useState<PlayMode>("single");
+  const [playMode, setPlayMode] = useState<PlayMode>(initialPlayMode ?? "single");
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
-  const [connectingWallet, setConnectingWallet] = useState(false);
+  const [joiningTable, setJoiningTable] = useState(false);
   const [activeRequest, setActiveRequest] = useState<ActiveRequest>(null);
-  const [onChainPhase, setOnChainPhase] = useState<string>("unknown");
+  const [, setOnChainPhase] = useState<string>("unknown");
   const [winnerAddress, setWinnerAddress] = useState<string | null>(null);
+  const [lobby, setLobby] = useState<api.TableLobbyResponse | null>(null);
   const [botLine, setBotLine] = useState<string | null>(null);
+  const [elapsed, setElapsed] = useState(0);
   const botTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const botStepRef = useRef<string>("");
   const botRetriesRef = useRef<Record<string, number>>({});
@@ -103,11 +107,21 @@ export function Table({ tableId }: TableProps) {
     seatedAddresses.length > 0
       ? seatedAddresses.map(shortAddress).join(" vs ")
       : "NO SEATS YET";
+  const claimedWallets = (lobby?.seats ?? [])
+    .map((seat) => seat.wallet_address)
+    .filter((address): address is string => !!address);
 
   const syncOnChainState = useCallback(async () => {
     try {
-      const { parsed } = await api.getParsedTableState(tableId);
+      const [tableState, lobbyState] = await Promise.all([
+        api.getParsedTableState(tableId),
+        api.getTableLobby(tableId).catch(() => null),
+      ]);
+      const { parsed } = tableState;
       if (!parsed) return;
+      if (lobbyState) {
+        setLobby(lobbyState);
+      }
 
       const phaseRaw = typeof parsed.phase === "string" ? parsed.phase : null;
       if (phaseRaw) {
@@ -124,6 +138,14 @@ export function Table({ tableId }: TableProps) {
       const rawPlayers = Array.isArray(parsed.players)
         ? (parsed.players as Array<Record<string, unknown>>)
         : null;
+      const walletByChain = new Map<string, string>();
+      if (lobbyState?.seats) {
+        for (const seat of lobbyState.seats) {
+          if (seat.wallet_address) {
+            walletByChain.set(seat.chain_address, seat.wallet_address);
+          }
+        }
+      }
 
       setGame((prev) => {
         const rawHasWallet =
@@ -147,15 +169,16 @@ export function Table({ tableId }: TableProps) {
                   typeof raw.address === "string"
                     ? raw.address
                     : prev.players[index]?.address ?? `seat-${index}`;
+                const lobbyAddress = walletByChain.get(chainAddress);
                 const address = preserveLocalSeatAddresses
                   ? prev.players[index]?.address ?? chainAddress
-                  : aliasWalletSeatForLocalDev && index === 0
-                    ? userAddress
-                  : chainAddress;
+                  : lobbyAddress ?? chainAddress;
+                const normalizedAddress =
+                  aliasWalletSeatForLocalDev && index === 0 ? userAddress ?? address : address;
                 const existing =
-                  prev.players.find((p) => p.address === address) ?? prev.players[index];
+                  prev.players.find((p) => p.address === normalizedAddress) ?? prev.players[index];
                 return {
-                  address,
+                  address: normalizedAddress,
                   seat: toNumber(raw.seat_index, existing?.seat ?? index),
                   stack: toNumber(raw.stack, existing?.stack ?? 0),
                   betThisRound: toNumber(raw.bet_this_round, existing?.betThisRound ?? 0),
@@ -209,37 +232,64 @@ export function Table({ tableId }: TableProps) {
     return () => clearInterval(interval);
   }, [syncOnChainState]);
 
-  const handleConnectWallet = useCallback(async () => {
-    setConnectingWallet(true);
+  // Silent reconnect on mount
+  useEffect(() => {
+    if (!wallet) {
+      void trySilentReconnect().then((session) => {
+        if (session) {
+          setWallet(session);
+          void hydrateMyCards(session);
+        }
+      });
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Elapsed timer while loading
+  useEffect(() => {
+    if (loading) {
+      setElapsed(0);
+      const interval = setInterval(() => {
+        setElapsed((prev) => prev + 1);
+      }, 1000);
+      return () => clearInterval(interval);
+    } else {
+      setElapsed(0);
+    }
+  }, [loading]);
+
+  const handleJoinTable = useCallback(async () => {
+    if (!wallet) {
+      setError("Connect Freighter wallet before joining a table");
+      return;
+    }
+    setJoiningTable(true);
     setError(null);
     try {
-      const connected = await connectFreighterWallet();
-      setWallet(connected);
-      if (!opponentAddress && game.players.length >= 2) {
-        const existingOpponent = game.players.find((p) => p.address !== connected.address);
-        if (existingOpponent) {
-          setOpponentAddress(existingOpponent.address);
-        }
-      }
-      if (multiOpponents.every((entry) => !entry.trim()) && game.players.length >= 2) {
-        const known = game.players
-          .filter((p) => p.address !== connected.address)
-          .map((p) => p.address)
-          .slice(0, 5);
-        if (known.length > 0) {
-          while (known.length < 2) {
-            known.push("");
-          }
-          setMultiOpponents(known);
-        }
-      }
-      await hydrateMyCards(connected);
+      await api.joinTable(tableId, wallet);
+      await syncOnChainState();
+      await hydrateMyCards(wallet);
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Failed to connect wallet");
+      setError(e instanceof Error ? e.message : "Join table failed");
     } finally {
-      setConnectingWallet(false);
+      setJoiningTable(false);
     }
-  }, [game.players, hydrateMyCards, multiOpponents, opponentAddress]);
+  }, [hydrateMyCards, syncOnChainState, tableId, wallet]);
+
+  // Auto-join table when wallet is available but not yet seated
+  const autoJoinedRef = useRef(false);
+  useEffect(() => {
+    if (
+      wallet &&
+      !isWalletSeated &&
+      !joiningTable &&
+      !autoJoinedRef.current &&
+      game.phase === "waiting"
+    ) {
+      autoJoinedRef.current = true;
+      void handleJoinTable();
+    }
+  }, [wallet, isWalletSeated, joiningTable, game.phase, handleJoinTable]);
 
   const resolvePlayersForDeal = useCallback((): string[] | null => {
     if (!wallet) {
@@ -252,70 +302,24 @@ export function Table({ tableId }: TableProps) {
       return null;
     }
 
-    const existingOpponents = game.players
-      .filter((p) => p.address !== wallet.address)
-      .map((p) => p.address);
-    if (playMode === "single") {
-      const opponent = (
-        existingOpponents[0] ??
-        opponentAddress ??
-        process.env.NEXT_PUBLIC_SINGLE_PLAYER_OPPONENT ??
-        ""
-      ).trim();
-      if (!isStellarAddress(opponent)) {
-        setError("Solo mode could not find a valid local opponent seat");
-        return null;
-      }
-      if (opponent === wallet.address) {
-        setError("Opponent seat cannot match your wallet");
-        return null;
-      }
-      return [wallet.address, opponent];
-    }
-
-    if (playMode === "headsup") {
-      const opponent = (existingOpponents[0] ?? opponentAddress).trim();
-      if (!isStellarAddress(opponent)) {
-        setError("Enter a valid opponent Stellar address");
-        return null;
-      }
-      if (opponent === wallet.address) {
-        setError("Opponent address must be different from your wallet");
-        return null;
-      }
-      return [wallet.address, opponent];
-    }
-
-    const submittedOpponents = multiOpponents
-      .map((address) => address.trim())
-      .filter((address) => address.length > 0);
-    const opponents = submittedOpponents.length > 0 ? submittedOpponents : existingOpponents;
-
-    if (opponents.length < 2) {
-      setError("Multi-player mode needs at least 2 opponents (3 total players)");
-      return null;
-    }
-    if (opponents.length > 5) {
-      setError("Multi-player mode supports up to 6 total players");
+    if (!claimedWallets.includes(wallet.address)) {
+      setError("Join table first so your wallet is seated");
       return null;
     }
 
-    const players = [wallet.address, ...opponents];
-    for (const address of players) {
-      if (!isStellarAddress(address)) {
-        setError(`Invalid Stellar address in player list: ${address}`);
-        return null;
-      }
+    const joinedWallets = lobby?.joined_wallets ?? claimedWallets.length;
+    if (playMode === "headsup" && joinedWallets < 2) {
+      setError("Two-player mode needs 2 joined wallets");
+      return null;
     }
-
-    const unique = new Set(players);
-    if (unique.size !== players.length) {
-      setError("Duplicate player addresses are not allowed");
+    if (playMode === "multi" && joinedWallets < 3) {
+      setError("3-6 player mode needs at least 3 joined wallets");
       return null;
     }
 
-    return players;
-  }, [wallet, game.players, opponentAddress, playMode, multiOpponents]);
+    // Empty list tells coordinator to resolve all on-chain seats from lobby.
+    return [];
+  }, [wallet, claimedWallets, lobby, playMode]);
 
   const handleDeal = useCallback(
     async (players: string[]) => {
@@ -341,14 +345,17 @@ export function Table({ tableId }: TableProps) {
           lastTxHash: txHash,
           proofSize: result.proof_size,
           onChainConfirmed: !!txHash,
-          players: players.map((address, seat) => ({
-            address,
-            seat,
-            stack: 10000,
-            betThisRound: 0,
-            folded: false,
-            allIn: false,
-          })),
+          players:
+            players.length > 0
+              ? players.map((address, seat) => ({
+                  address,
+                  seat,
+                  stack: 10000,
+                  betThisRound: 0,
+                  folded: false,
+                  allIn: false,
+                }))
+              : prev.players,
         }));
 
         await hydrateMyCards(wallet);
@@ -469,7 +476,7 @@ export function Table({ tableId }: TableProps) {
   const canStartHand = !!wallet;
   const seatStatusHint =
     wallet && !isWalletSeated && seatedAddresses.length > 0
-      ? "Connected wallet is not in on-chain seats. You can still click DEAL to run a hand with this wallet."
+      ? "Connected wallet is not seated in this hand. Click JOIN TABLE first, then DEAL."
       : null;
 
   useEffect(() => {
@@ -544,24 +551,31 @@ export function Table({ tableId }: TableProps) {
 
     botTimerRef.current = setTimeout(() => {
       void action();
-    }, 900);
+    }, 350);
   }, [game.handNumber, game.phase, handleReveal, handleShowdown, loading, playMode, wallet]);
+
+  const formatElapsed = (s: number) => {
+    const m = Math.floor(s / 60);
+    const sec = s % 60;
+    return m > 0 ? `${m}m ${sec}s` : `${sec}s`;
+  };
 
   const dealerLine = (() => {
     if (loading) {
+      const timer = ` [${formatElapsed(elapsed)}]`;
       switch (activeRequest) {
         case "deal":
-          return "Dealer: Shuffling, dealing, and proving the hand...";
+          return `Dealer: SHUFFLING & GENERATING DEAL PROOF... (~30-60s)${timer}`;
         case "flop":
-          return "Dealer: Burning one, turning over the flop...";
+          return `Dealer: GENERATING REVEAL PROOF... (~20-40s)${timer}`;
         case "turn":
-          return "Dealer: Turn card coming up...";
+          return `Dealer: GENERATING REVEAL PROOF... (~20-40s)${timer}`;
         case "river":
-          return "Dealer: Final card on the river...";
+          return `Dealer: GENERATING REVEAL PROOF... (~20-40s)${timer}`;
         case "showdown":
-          return "Dealer: Reading hands and verifying showdown proof (slowest step).";
+          return `Dealer: VERIFYING SHOWDOWN — THIS TAKES 2-4 MINUTES. PLEASE WAIT.${timer}`;
         default:
-          return "Dealer: One moment...";
+          return `Dealer: One moment...${timer}`;
       }
     }
 
@@ -576,12 +590,18 @@ export function Table({ tableId }: TableProps) {
     switch (game.phase) {
       case "waiting":
         if (playMode === "single") {
-          return "Dealer: Solo mode. Opponent seat is automatic, click DEAL CARDS.";
+          return "Dealer: Solo mode. Join table, then click DEAL CARDS.";
         }
         if (playMode === "headsup") {
-          return "Dealer: Two-player mode. Enter opponent wallet, then click DEAL CARDS.";
+          if ((lobby?.joined_wallets ?? 0) < 2) {
+            return "Dealer: Two-player mode needs 2 joined wallets. Share table ID and wait for one join.";
+          }
+          return "Dealer: Heads-up is ready. Click DEAL CARDS.";
         }
-        return "Dealer: Multi-player mode. Enter 3-6 total player wallets, then click DEAL CARDS.";
+        if ((lobby?.joined_wallets ?? 0) < 3) {
+          return "Dealer: 3-6 player mode needs at least 3 joined wallets.";
+        }
+        return "Dealer: Multi-player table is ready. Click DEAL CARDS.";
       case "dealing":
         return "Dealer: Cards are being dealt.";
       case "preflop":
@@ -603,34 +623,15 @@ export function Table({ tableId }: TableProps) {
     }
   })();
 
-  const setMultiOpponentAt = (index: number, value: string) => {
-    setMultiOpponents((prev) => {
-      const next = [...prev];
-      next[index] = value;
-      return next;
-    });
-  };
-
-  const addMultiOpponentField = () => {
-    setMultiOpponents((prev) => (prev.length >= 5 ? prev : [...prev, ""]));
-  };
-
-  const removeMultiOpponentField = (index: number) => {
-    setMultiOpponents((prev) => {
-      if (prev.length <= 2) return prev;
-      return prev.filter((_, i) => i !== index);
-    });
-  };
-
   return (
-    <PixelWorld autoNight>
+    <PixelWorld>
       <div className="min-h-screen flex flex-col items-center gap-4 p-4 pt-6 relative z-[10]">
         {/* Header bar */}
         <div className="w-full max-w-3xl flex items-center justify-between">
           <div className="flex items-center gap-3">
             <Link
               href="/"
-              className="text-[14px]"
+              className="text-[24px]"
               style={{
                 color: "#f5e6c8",
                 textShadow: "2px 2px 0 #2c3e50",
@@ -640,9 +641,8 @@ export function Table({ tableId }: TableProps) {
             >
               ←
             </Link>
-            <PixelChip color="red" size={3} />
             <h1
-              className="text-[10px]"
+              className="text-[13px]"
               style={{
                 color: "white",
                 textShadow: "2px 2px 0 #2c3e50",
@@ -653,185 +653,95 @@ export function Table({ tableId }: TableProps) {
           </div>
 
           <div className="flex items-center gap-3">
-            <div className="text-[7px]" style={{ color: "#c8e6ff" }}>
-              HAND #{game.handNumber} | {game.phase.toUpperCase()} | CHAIN {onChainPhase}
+            <div className="text-[9px]" style={{ color: "#c8e6ff" }}>
+              HAND #{game.handNumber} | {game.phase.toUpperCase()}
             </div>
 
-            {wallet ? (
+            {game.lastTxHash ? (
+              <a
+                href={`https://stellar.expert/explorer/testnet/tx/${game.lastTxHash}`}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="text-[9px]"
+                style={{ color: "#3498db", textDecoration: "none" }}
+              >
+                EXPLORER ↗
+              </a>
+            ) : (
+              <a
+                href="https://stellar.expert/explorer/testnet"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="text-[9px]"
+                style={{ color: "#3498db", textDecoration: "none" }}
+              >
+                EXPLORER ↗
+              </a>
+            )}
+
+            {wallet && (
               <div
                 className="pixel-border-thin px-2 py-1"
                 style={{
                   background: "rgba(39, 174, 96, 0.2)",
-                  fontSize: "7px",
+                  fontSize: "9px",
                   color: "#27ae60",
                 }}
               >
                 {shortAddress(wallet.address)}
               </div>
-            ) : (
-              <button
-                onClick={handleConnectWallet}
-                disabled={connectingWallet}
-                className="pixel-btn pixel-btn-blue text-[7px]"
-                style={{ padding: "4px 10px" }}
-              >
-                {connectingWallet ? "..." : "CONNECT"}
-              </button>
             )}
+          </div>
+        </div>
 
-            {loading && (
+
+        {/* Dealer line */}
+        <div
+          className="w-full max-w-3xl pixel-border-thin px-4 py-2"
+          style={{
+            background: loading
+              ? "rgba(40, 20, 8, 0.9)"
+              : "rgba(12, 10, 24, 0.88)",
+            borderColor: loading ? "#f1c40f" : "#c47d2e",
+            animation: loading
+              ? "dealerPulse 1.5s ease-in-out infinite"
+              : undefined,
+          }}
+        >
+          {loading && (
+            <div className="flex items-center gap-2 mb-1">
               <div
                 style={{
-                  width: "12px",
-                  height: "12px",
+                  width: "8px",
+                  height: "8px",
                   border: "2px solid #f1c40f",
                   borderTopColor: "transparent",
                   borderRadius: "50%",
                   animation: "spin 0.6s linear infinite",
                 }}
               />
-            )}
-          </div>
-        </div>
-
-        {/* Mode + opponent controls */}
-        {game.phase === "waiting" && (
-          <div className="w-full max-w-3xl flex flex-col gap-2">
-            <div className="flex items-center gap-2">
-              <button
-                type="button"
-                onClick={() => setPlayMode("single")}
-                className="pixel-btn text-[7px]"
-                style={{
-                  padding: "4px 10px",
-                  opacity: playMode === "single" ? 1 : 0.7,
-                  background: playMode === "single" ? "#145a32" : "#2c3e50",
-                }}
+              <span
+                className="text-[10px]"
+                style={{ color: "#f1c40f", fontWeight: "bold" }}
               >
-                1 PLAYER
-              </button>
-              <button
-                type="button"
-                onClick={() => setPlayMode("headsup")}
-                className="pixel-btn text-[7px]"
-                style={{
-                  padding: "4px 10px",
-                  opacity: playMode === "headsup" ? 1 : 0.7,
-                  background: playMode === "headsup" ? "#7d6608" : "#2c3e50",
-                }}
-              >
-                2 PLAYER
-              </button>
-              <button
-                type="button"
-                onClick={() => setPlayMode("multi")}
-                className="pixel-btn text-[7px]"
-                style={{
-                  padding: "4px 10px",
-                  opacity: playMode === "multi" ? 1 : 0.7,
-                  background: playMode === "multi" ? "#1f618d" : "#2c3e50",
-                }}
-              >
-                3-6 PLAYERS
-              </button>
+                GENERATING PROOF...
+              </span>
             </div>
-
-            {playMode === "headsup" ? (
-              <input
-                type="text"
-                value={opponentAddress}
-                onChange={(e) => setOpponentAddress(e.target.value.trim())}
-                placeholder="OPPONENT ADDRESS (G...)"
-                className="flex-1 text-[7px]"
-                style={{ padding: "6px 10px" }}
-              />
-            ) : playMode === "multi" ? (
-              <div className="flex flex-col gap-2">
-                {multiOpponents.map((address, index) => (
-                  <div key={`multi-seat-${index}`} className="flex items-center gap-2">
-                    <input
-                      type="text"
-                      value={address}
-                      onChange={(e) => setMultiOpponentAt(index, e.target.value.trim())}
-                      placeholder={`PLAYER ${index + 2} ADDRESS (G...)`}
-                      className="flex-1 text-[7px]"
-                      style={{ padding: "6px 10px" }}
-                    />
-                    {multiOpponents.length > 2 && (
-                      <button
-                        type="button"
-                        onClick={() => removeMultiOpponentField(index)}
-                        className="pixel-btn text-[7px]"
-                        style={{ padding: "4px 8px", background: "#7b241c" }}
-                      >
-                        -
-                      </button>
-                    )}
-                  </div>
-                ))}
-                <div className="flex items-center gap-2">
-                  <button
-                    type="button"
-                    onClick={addMultiOpponentField}
-                    disabled={multiOpponents.length >= 5}
-                    className="pixel-btn text-[7px]"
-                    style={{
-                      padding: "4px 10px",
-                      opacity: multiOpponents.length >= 5 ? 0.6 : 1,
-                      background: "#1f618d",
-                    }}
-                  >
-                    + ADD PLAYER
-                  </button>
-                  <span className="text-[7px]" style={{ color: "#c8e6ff" }}>
-                    TOTAL PLAYERS: {1 + multiOpponents.filter((a) => a.trim().length > 0).length} / 6
-                  </span>
-                </div>
-              </div>
-            ) : (
-              <div
-                className="pixel-border-thin px-3 py-2 text-[7px]"
-                style={{
-                  color: "#c8e6ff",
-                  background: "rgba(10, 20, 30, 0.55)",
-                  borderColor: "rgba(140, 170, 200, 0.45)",
-                }}
-              >
-                SOLO MODE: Opponent seat auto-selected from table seats.
-              </div>
-            )}
-          </div>
-        )}
-
-        {/* Dealer line */}
-        <div
-          className="w-full max-w-3xl pixel-border-thin px-4 py-2"
-          style={{
-            background: "rgba(20, 12, 8, 0.75)",
-            borderColor: "#8b6914",
-          }}
-        >
-          <span className="text-[7px]" style={{ color: "#f5e6c8" }}>
+          )}
+          <span
+            className={loading ? "text-[10px]" : "text-[9px]"}
+            style={{ color: loading ? "#ffeaa7" : "#f5e6c8" }}
+          >
             {dealerLine}
           </span>
         </div>
 
-        <div
-          className="w-full max-w-3xl pixel-border-thin px-4 py-2"
-          style={{
-            background: "rgba(10, 20, 30, 0.55)",
-            borderColor: "rgba(140, 170, 200, 0.45)",
-          }}
-        >
-          <span className="text-[7px]" style={{ color: "#c8e6ff" }}>
-            TABLE SEATS: {tableSeatLabel}
-            {wallet
-              ? isWalletSeated
-                ? ` | YOU: ${shortAddress(wallet.address)}`
-                : ` | CONNECTED: ${shortAddress(wallet.address)} (NOT SEATED)`
-              : ""}
-          </span>
-        </div>
+        <style jsx>{`
+          @keyframes dealerPulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.85; }
+          }
+        `}</style>
 
         {/* Error display */}
         {error && (
@@ -842,7 +752,7 @@ export function Table({ tableId }: TableProps) {
               borderColor: "#e74c3c",
             }}
           >
-            <span className="text-[7px]" style={{ color: "#e74c3c" }}>
+            <span className="text-[9px]" style={{ color: "#e74c3c" }}>
               {error}
             </span>
           </div>
@@ -887,16 +797,16 @@ export function Table({ tableId }: TableProps) {
               {game.players.filter((p) => !userAddress || p.address !== userAddress).length === 0 && (
                 <>
                   {[
-                    { variant: "grey" as const, flipped: false },
-                    { variant: "black" as const, flipped: true },
+                    { sprite: 17, flipped: false },
+                    { sprite: 20, flipped: true },
                   ].map((seat, i) => (
                     <div key={i} className="flex flex-col items-center gap-2" style={{ opacity: 0.25 }}>
-                      <PixelCat variant={seat.variant} size={4} flipped={seat.flipped} />
+                      <PixelCat sprite={seat.sprite} size={48} flipped={seat.flipped} />
                       <div className="flex gap-1">
                         <Card faceDown size="sm" />
                         <Card faceDown size="sm" />
                       </div>
-                      <div className="text-[6px]" style={{ color: 'rgba(255,255,255,0.3)' }}>
+                      <div className="text-[8px]" style={{ color: 'rgba(255,255,255,0.3)' }}>
                         EMPTY
                       </div>
                     </div>
@@ -919,8 +829,8 @@ export function Table({ tableId }: TableProps) {
                   <button
                     onClick={() => handleReveal("flop")}
                     disabled={loading || !wallet}
-                    className="pixel-btn pixel-btn-dark text-[7px]"
-                    style={{ padding: "4px 12px", opacity: loading || !wallet ? 0.7 : 1 }}
+                    className="pixel-btn pixel-btn-dark text-[9px]"
+                    style={{ padding: "6px 14px", opacity: loading || !wallet ? 0.7 : 1 }}
                   >
                     DEAL FLOP
                   </button>
@@ -929,8 +839,8 @@ export function Table({ tableId }: TableProps) {
                   <button
                     onClick={() => handleReveal("turn")}
                     disabled={loading || !wallet}
-                    className="pixel-btn pixel-btn-dark text-[7px]"
-                    style={{ padding: "4px 12px", opacity: loading || !wallet ? 0.7 : 1 }}
+                    className="pixel-btn pixel-btn-dark text-[9px]"
+                    style={{ padding: "6px 14px", opacity: loading || !wallet ? 0.7 : 1 }}
                   >
                     DEAL TURN
                   </button>
@@ -939,8 +849,8 @@ export function Table({ tableId }: TableProps) {
                   <button
                     onClick={() => handleReveal("river")}
                     disabled={loading || !wallet}
-                    className="pixel-btn pixel-btn-dark text-[7px]"
-                    style={{ padding: "4px 12px", opacity: loading || !wallet ? 0.7 : 1 }}
+                    className="pixel-btn pixel-btn-dark text-[9px]"
+                    style={{ padding: "6px 14px", opacity: loading || !wallet ? 0.7 : 1 }}
                   >
                     DEAL RIVER
                   </button>
@@ -949,10 +859,10 @@ export function Table({ tableId }: TableProps) {
                   <button
                     onClick={handleShowdown}
                     disabled={loading || !wallet}
-                    className="pixel-btn pixel-btn-gold text-[7px]"
-                    style={{ padding: "4px 12px", opacity: loading || !wallet ? 0.7 : 1 }}
+                    className="pixel-btn pixel-btn-gold text-[9px]"
+                    style={{ padding: "6px 14px", opacity: loading || !wallet ? 0.7 : 1 }}
                   >
-                    {game.phase === "showdown" ? "RESOLVE SHOWDOWN" : "SHOWDOWN"}
+                    {game.phase === "showdown" ? "RESOLVE SHOWDOWN (2-4 MIN)" : "SHOWDOWN (2-4 MIN)"}
                   </button>
                 )}
               </div>
@@ -970,12 +880,12 @@ export function Table({ tableId }: TableProps) {
                 />
               ) : (
                 <div className="flex flex-col items-center gap-2" style={{ opacity: 0.25 }}>
-                  <PixelCat variant="orange" size={6} />
+                  <PixelCat sprite={18} size={72} />
                   <div className="flex gap-1">
                     <Card faceDown size="md" />
                     <Card faceDown size="md" />
                   </div>
-                  <div className="text-[7px]" style={{ color: 'rgba(255,255,255,0.3)' }}>
+                  <div className="text-[9px]" style={{ color: 'rgba(255,255,255,0.3)' }}>
                     {wallet ? "WAITING TO JOIN..." : "CONNECT WALLET"}
                   </div>
                 </div>
@@ -997,6 +907,8 @@ export function Table({ tableId }: TableProps) {
             canStartHand={canStartHand}
             canResolveShowdown={!!wallet}
             statusHint={seatStatusHint}
+            loading={loading}
+            isSolo={playMode === "single"}
           />
         </div>
 
@@ -1011,12 +923,12 @@ export function Table({ tableId }: TableProps) {
                 boxShadow: "0 0 4px #27ae60",
               }}
             />
-            <span className="text-[6px]" style={{ color: "#7f8c8d" }}>
+            <span className="text-[8px]" style={{ color: "#7f8c8d" }}>
               MPC: 3/3 NODES | TACEO CO-NOIR REP3
             </span>
             {game.proofSize && (
               <span
-                className="pixel-border-thin px-1 py-0.5 text-[6px]"
+                className="pixel-border-thin px-1 py-0.5 text-[8px]"
                 style={{
                   background: "rgba(20, 12, 8, 0.6)",
                   color: "#95a5a6",
@@ -1033,7 +945,7 @@ export function Table({ tableId }: TableProps) {
               ) : (
                 <div style={{ width: "4px", height: "4px", background: "#f1c40f" }} />
               )}
-              <span className="text-[6px]" style={{ color: "#7f8c8d" }}>
+              <span className="text-[8px]" style={{ color: "#7f8c8d" }}>
                 TX:{" "}
                 <a
                   href={`https://stellar.expert/explorer/testnet/tx/${game.lastTxHash}`}
@@ -1049,10 +961,10 @@ export function Table({ tableId }: TableProps) {
         </div>
 
         <div className="fixed bottom-[14%] left-[5%] z-[5]">
-          <PixelCat variant="grey" size={4} />
+          <PixelCat sprite={17} size={48} />
         </div>
         <div className="fixed bottom-[13%] right-[5%] z-[5]">
-          <PixelCat variant="black" size={5} flipped />
+          <PixelCat sprite={21} size={56} flipped />
         </div>
       </div>
     </PixelWorld>

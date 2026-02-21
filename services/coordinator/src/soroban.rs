@@ -152,7 +152,11 @@ async fn invoke_contract_with_retries(
 }
 
 fn resolve_onchain_table_id(config: &SorobanConfig, table_id: u32) -> u32 {
-    config.onchain_table_id.unwrap_or(table_id)
+    if table_id == 0 {
+        config.onchain_table_id.unwrap_or(0)
+    } else {
+        table_id
+    }
 }
 
 async fn invoke_contract_with_source(
@@ -562,6 +566,95 @@ pub async fn claim_timeout(config: &SorobanConfig, table_id: u32) -> Result<Stri
     parse_tx_result(output)
 }
 
+/// Create a new table by cloning the reference table config and pre-seeding
+/// seats with configured local player identities.
+pub async fn create_seeded_table(
+    config: &SorobanConfig,
+    reference_table_id: u32,
+    max_players: u32,
+    buy_in: i128,
+) -> Result<u32, String> {
+    if !config.is_configured() {
+        return Err("Soroban not configured".to_string());
+    }
+    if !(2..=6).contains(&max_players) {
+        return Err(format!("max_players out of range: {}", max_players));
+    }
+    if config.player_identities.len() < max_players as usize {
+        return Err(format!(
+            "not enough configured player identities: have {}, need {}",
+            config.player_identities.len(),
+            max_players
+        ));
+    }
+
+    let raw = get_table_state(config, reference_table_id).await?;
+    let value: serde_json::Value =
+        serde_json::from_str(&raw).map_err(|e| format!("failed to parse reference table: {}", e))?;
+    let mut cfg = value
+        .get("config")
+        .cloned()
+        .ok_or("reference table missing config")?;
+    if let Some(obj) = cfg.as_object_mut() {
+        obj.insert(
+            "max_players".to_string(),
+            serde_json::Value::Number(serde_json::Number::from(max_players)),
+        );
+        obj.insert(
+            "committee".to_string(),
+            serde_json::Value::String(config.committee_address()?),
+        );
+    } else {
+        return Err("reference config is not an object".to_string());
+    }
+    let cfg_json = serde_json::to_string(&cfg)
+        .map_err(|e| format!("failed to serialize table config: {}", e))?;
+
+    let committee_addr = config.committee_address()?;
+    let output = invoke_contract_with_retries(
+        config,
+        vec![
+            "create_table".to_string(),
+            "--admin".to_string(),
+            committee_addr,
+            "--config".to_string(),
+            cfg_json,
+        ],
+    )
+    .await?;
+
+    if !output.status.success() {
+        return Err(format!(
+            "create_table failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        ));
+    }
+    let table_id = parse_u32_from_stdout(&String::from_utf8_lossy(&output.stdout))
+        .ok_or_else(|| "failed to parse table id from create_table output".to_string())?;
+
+    let onchain_table_id = resolve_onchain_table_id(config, table_id);
+    for (player_address, identity) in config.player_identities.iter().take(max_players as usize) {
+        let join_output = invoke_contract_with_source_retries(
+            config,
+            identity,
+            vec![
+                "join_table".to_string(),
+                "--table_id".to_string(),
+                onchain_table_id.to_string(),
+                "--player".to_string(),
+                player_address.clone(),
+                "--buy_in".to_string(),
+                buy_in.to_string(),
+            ],
+        )
+        .await?;
+
+        parse_tx_result(join_output)?;
+    }
+
+    Ok(table_id)
+}
+
 /// Read on-chain table state via `stellar contract invoke -- get_table`.
 pub async fn get_table_state(
     config: &SorobanConfig,
@@ -831,4 +924,29 @@ fn parse_tx_result(output: std::process::Output) -> Result<String, String> {
     } else {
         Ok(tx_hash)
     }
+}
+
+fn parse_u32_from_stdout(stdout: &str) -> Option<u32> {
+    for line in stdout.lines().rev() {
+        let t = line.trim();
+        if t.is_empty() {
+            continue;
+        }
+        if let Ok(v) = t.parse::<u32>() {
+            return Some(v);
+        }
+        if let Ok(json) = serde_json::from_str::<serde_json::Value>(t) {
+            if let Some(v) = json.as_u64().and_then(|n| u32::try_from(n).ok()) {
+                return Some(v);
+            }
+            if let Some(v) = json
+                .get("u32")
+                .and_then(|n| n.as_u64())
+                .and_then(|n| u32::try_from(n).ok())
+            {
+                return Some(v);
+            }
+        }
+    }
+    None
 }

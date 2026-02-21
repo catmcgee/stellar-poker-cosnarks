@@ -9,3 +9,8 @@ app/.next/
 circuits/*/target/
 circuits/*/proofs/
 crs/
+
+# Local temporary tool/cache artifacts
+.tmp*
+**/.tmp*
+*.tmp

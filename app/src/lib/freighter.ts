@@ -265,15 +265,45 @@ async function connectViaLegacyApi(): Promise<WalletSession | null> {
   };
 }
 
+// ── localStorage wallet persistence ──
+
+const WALLET_KEY = "stellar_poker_wallet";
+
+function saveWalletAddress(address: string): void {
+  try {
+    localStorage.setItem(WALLET_KEY, address);
+  } catch {
+    // Storage full or unavailable — ignore.
+  }
+}
+
+export function getSavedWalletAddress(): string | null {
+  try {
+    return localStorage.getItem(WALLET_KEY);
+  } catch {
+    return null;
+  }
+}
+
+export function clearSavedWallet(): void {
+  try {
+    localStorage.removeItem(WALLET_KEY);
+  } catch {
+    // ignore
+  }
+}
+
 export async function connectFreighterWallet(): Promise<WalletSession> {
   try {
     const modern = await connectViaOfficialApi();
     if (modern) {
+      saveWalletAddress(modern.address);
       return modern;
     }
   } catch (err) {
     const legacy = await connectViaLegacyApi();
     if (legacy) {
+      saveWalletAddress(legacy.address);
       return legacy;
     }
     throw err;
@@ -281,10 +311,50 @@ export async function connectFreighterWallet(): Promise<WalletSession> {
 
   const legacy = await connectViaLegacyApi();
   if (legacy) {
+    saveWalletAddress(legacy.address);
     return legacy;
   }
 
   throw new Error(
     "Freighter wallet not found. Open Freighter, unlock it, and allow this site."
   );
+}
+
+/**
+ * Silently reconnect if localStorage has a saved wallet address and
+ * Freighter is already approved (no popup). Uses getAddress instead of
+ * requestAccess to avoid triggering a Freighter approval popup.
+ */
+export async function trySilentReconnect(): Promise<WalletSession | null> {
+  const saved = getSavedWalletAddress();
+  if (!saved) return null;
+
+  try {
+    const connected = await freighterIsConnected();
+    if (!connected.isConnected) {
+      clearSavedWallet();
+      return null;
+    }
+
+    // Use getAddress directly — avoids the requestAccess popup.
+    // If the site was previously approved, this returns the address silently.
+    const current = await freighterGetAddress();
+    if (current.error || !current.address) {
+      clearSavedWallet();
+      return null;
+    }
+
+    const address = current.address;
+
+    return {
+      address,
+      signMessage: async (message: string) => {
+        const result = await freighterSignMessage(message, { address });
+        return parseModernSignature(result);
+      },
+    };
+  } catch {
+    clearSavedWallet();
+    return null;
+  }
 }

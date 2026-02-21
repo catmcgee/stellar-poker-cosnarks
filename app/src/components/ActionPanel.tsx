@@ -15,6 +15,8 @@ interface ActionPanelProps {
   canStartHand?: boolean;
   canResolveShowdown?: boolean;
   statusHint?: string | null;
+  loading?: boolean;
+  isSolo?: boolean;
 }
 
 export function ActionPanel({
@@ -28,6 +30,8 @@ export function ActionPanel({
   canStartHand = true,
   canResolveShowdown = true,
   statusHint = null,
+  loading = false,
+  isSolo = false,
 }: ActionPanelProps) {
   const [betAmount, setBetAmount] = useState(0);
 
@@ -40,14 +44,14 @@ export function ActionPanel({
       <div className="flex flex-col items-center gap-2">
         <button
           onClick={() => onAction("start")}
-          disabled={!canStartHand}
-          className="pixel-btn pixel-btn-green text-[10px]"
-          style={{ opacity: canStartHand ? 1 : 0.6 }}
+          disabled={!canStartHand || loading}
+          className="pixel-btn pixel-btn-green text-[12px]"
+          style={{ padding: "8px 20px", opacity: canStartHand && !loading ? 1 : 0.6 }}
         >
           DEAL CARDS
         </button>
         {statusHint && (
-          <span className="text-[7px]" style={{ color: "#f39c12" }}>
+          <span className="text-[9px]" style={{ color: "#f39c12" }}>
             {statusHint}
           </span>
         )}
@@ -59,38 +63,28 @@ export function ActionPanel({
     return (
       <div className="flex flex-col items-center gap-3">
         <div className="flex items-center gap-2">
-          <span className="text-[8px]" style={{ color: '#95a5a6' }}>
+          <span className="text-[10px]" style={{ color: '#95a5a6' }}>
             {phase === "showdown" ? "SHOWDOWN..." : "HAND COMPLETE"}
           </span>
           {onChainConfirmed && (
-            <span className="text-[7px] flex items-center gap-1" style={{ color: '#27ae60' }}>
+            <span className="text-[9px] flex items-center gap-1" style={{ color: '#27ae60' }}>
               <PixelChip color="gold" size={2} />
               ON-CHAIN
             </span>
           )}
         </div>
-        {phase === "showdown" && (
-          <button
-            onClick={() => onAction("showdown")}
-            disabled={!canResolveShowdown}
-            className="pixel-btn pixel-btn-gold text-[9px]"
-            style={{ opacity: canResolveShowdown ? 1 : 0.6 }}
-          >
-            RESOLVE SHOWDOWN
-          </button>
-        )}
         {phase === "settlement" && (
           <button
             onClick={() => onAction("start")}
-            disabled={!canStartHand}
-            className="pixel-btn pixel-btn-green text-[9px]"
-            style={{ opacity: canStartHand ? 1 : 0.6 }}
+            disabled={!canStartHand || loading}
+            className="pixel-btn pixel-btn-green text-[11px]"
+            style={{ padding: "8px 18px", opacity: canStartHand && !loading ? 1 : 0.6 }}
           >
             NEW HAND
           </button>
         )}
         {statusHint && (
-          <span className="text-[7px]" style={{ color: "#f39c12" }}>
+          <span className="text-[9px]" style={{ color: "#f39c12" }}>
             {statusHint}
           </span>
         )}
@@ -100,11 +94,23 @@ export function ActionPanel({
 
   // Active betting phase (preflop, flop, turn, river)
   const isActive = ["preflop", "flop", "turn", "river"].includes(phase);
+  const disabled = !isMyTurn || loading;
   if (!isActive) {
     return (
       <div className="text-center">
-        <span className="text-[8px]" style={{ color: "#95a5a6" }}>
+        <span className="text-[10px]" style={{ color: "#95a5a6" }}>
           WAITING...
+        </span>
+      </div>
+    );
+  }
+
+  // In solo mode, the bot auto-handles all betting — hide the panel
+  if (isSolo) {
+    return (
+      <div className="text-center">
+        <span className="text-[10px]" style={{ color: "#95a5a6", fontStyle: "italic" }}>
+          AI OPPONENT AUTO-PLAYS — WAITING FOR NEXT PHASE...
         </span>
       </div>
     );
@@ -122,19 +128,19 @@ export function ActionPanel({
       <div className="flex items-center gap-4">
         <div className="flex items-center gap-1">
           <PixelChip color="red" size={2} />
-          <span className="text-[7px]" style={{ color: "#95a5a6" }}>
+          <span className="text-[9px]" style={{ color: "#95a5a6" }}>
             TABLE BET: {currentBet}
           </span>
         </div>
         <div className="flex items-center gap-1">
           <PixelChip color="blue" size={2} />
-          <span className="text-[7px]" style={{ color: "#95a5a6" }}>
+          <span className="text-[9px]" style={{ color: "#95a5a6" }}>
             YOUR BET: {myBet}
           </span>
         </div>
         <div className="flex items-center gap-1">
           <PixelChip color="gold" size={2} />
-          <span className="text-[7px]" style={{ color: "#27ae60" }}>
+          <span className="text-[9px]" style={{ color: "#27ae60" }}>
             STACK: {myStack.toLocaleString()}
           </span>
         </div>
@@ -145,12 +151,12 @@ export function ActionPanel({
         {/* FOLD */}
         <button
           onClick={() => onAction("fold")}
-          disabled={!isMyTurn}
-          className="pixel-btn text-[8px]"
+          disabled={disabled}
+          className="pixel-btn text-[10px]"
           style={{
-            padding: "5px 12px",
-            background: isMyTurn ? "#7b241c" : "#4a4a4a",
-            opacity: isMyTurn ? 1 : 0.5,
+            padding: "6px 14px",
+            background: !disabled ? "#7b241c" : "#4a4a4a",
+            opacity: !disabled ? 1 : 0.5,
             color: "white",
             textShadow: "1px 1px 0 rgba(0,0,0,0.6)",
           }}
@@ -161,12 +167,12 @@ export function ActionPanel({
         {/* CHECK / CALL */}
         <button
           onClick={() => onAction(callAmount === 0 ? "check" : "call", callAmount)}
-          disabled={!isMyTurn}
-          className="pixel-btn text-[8px]"
+          disabled={disabled}
+          className="pixel-btn text-[10px]"
           style={{
-            padding: "5px 12px",
-            background: isMyTurn ? "#1a5276" : "#4a4a4a",
-            opacity: isMyTurn ? 1 : 0.5,
+            padding: "6px 14px",
+            background: !disabled ? "#1a5276" : "#4a4a4a",
+            opacity: !disabled ? 1 : 0.5,
             color: "white",
             textShadow: "1px 1px 0 rgba(0,0,0,0.6)",
           }}
@@ -177,12 +183,12 @@ export function ActionPanel({
         {/* BET / RAISE */}
         <button
           onClick={() => onAction(currentBet === 0 ? "bet" : "raise", betAmount || minBet)}
-          disabled={!isMyTurn || myStack <= callAmount}
-          className="pixel-btn text-[8px]"
+          disabled={disabled || myStack <= callAmount}
+          className="pixel-btn text-[10px]"
           style={{
-            padding: "5px 12px",
-            background: isMyTurn && myStack > callAmount ? "#7d6608" : "#4a4a4a",
-            opacity: isMyTurn && myStack > callAmount ? 1 : 0.5,
+            padding: "6px 14px",
+            background: !disabled && myStack > callAmount ? "#7d6608" : "#4a4a4a",
+            opacity: !disabled && myStack > callAmount ? 1 : 0.5,
             color: "white",
             textShadow: "1px 1px 0 rgba(0,0,0,0.6)",
           }}
@@ -193,12 +199,12 @@ export function ActionPanel({
         {/* ALL IN */}
         <button
           onClick={() => onAction("allin", myStack)}
-          disabled={!isMyTurn || myStack <= 0}
-          className="pixel-btn text-[8px]"
+          disabled={disabled || myStack <= 0}
+          className="pixel-btn text-[10px]"
           style={{
-            padding: "5px 12px",
-            background: isMyTurn && myStack > 0 ? "#d4ac0d" : "#4a4a4a",
-            opacity: isMyTurn && myStack > 0 ? 1 : 0.5,
+            padding: "6px 14px",
+            background: !disabled && myStack > 0 ? "#d4ac0d" : "#4a4a4a",
+            opacity: !disabled && myStack > 0 ? 1 : 0.5,
             color: "#1a1a1a",
             textShadow: "1px 1px 0 rgba(255,255,255,0.3)",
             fontWeight: "bold",
@@ -209,7 +215,7 @@ export function ActionPanel({
       </div>
 
       {/* Bet slider + quick buttons */}
-      {isMyTurn && myStack > callAmount && (
+      {!disabled && myStack > callAmount && (
         <div className="flex items-center gap-3 w-full max-w-sm">
           <input
             type="range"
@@ -232,9 +238,9 @@ export function ActionPanel({
               <button
                 key={preset.label}
                 onClick={() => setBetAmount(Math.max(preset.value, minBet))}
-                className="pixel-btn text-[6px]"
+                className="pixel-btn text-[8px]"
                 style={{
-                  padding: "3px 6px",
+                  padding: "4px 8px",
                   background: "#2c3e50",
                   color: "#c8e6ff",
                 }}
@@ -246,14 +252,14 @@ export function ActionPanel({
         </div>
       )}
 
-      {!isMyTurn && (
-        <span className="text-[7px]" style={{ color: "#95a5a6", fontStyle: "italic" }}>
+      {disabled && !loading && (
+        <span className="text-[9px]" style={{ color: "#95a5a6", fontStyle: "italic" }}>
           WAITING FOR OPPONENT...
         </span>
       )}
 
       {statusHint && (
-        <span className="text-[7px]" style={{ color: "#f39c12" }}>
+        <span className="text-[9px]" style={{ color: "#f39c12" }}>
           {statusHint}
         </span>
       )}

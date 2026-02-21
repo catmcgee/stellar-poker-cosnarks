@@ -14,13 +14,6 @@ const CHIP_COLORS: Record<ChipColor, { outer: string; inner: string; edge: strin
   gold:  { outer: "#d4ac0d", inner: "#f1c40f", edge: "#b7950b", highlight: "#f4d03f" },
 };
 
-const CHIP_VALUES: Record<ChipColor, number> = {
-  gold: 1000,
-  blue: 500,
-  red: 100,
-  white: 25,
-};
-
 interface PixelChipProps {
   color?: ChipColor;
   size?: number;
@@ -31,7 +24,7 @@ export function PixelChip({ color = "red", size = 3 }: PixelChipProps) {
   const px = size;
 
   return (
-    <div style={{ display: "inline-block" }}>
+    <div style={{ display: "inline-block", width: `${8 * px}px`, height: `${7 * px}px` }}>
       <div
         style={{
           width: `${px}px`,
@@ -102,24 +95,15 @@ export function PixelChip({ color = "red", size = 3 }: PixelChipProps) {
   );
 }
 
-function breakIntoDenominations(amount: number): ChipColor[] {
-  const chips: ChipColor[] = [];
-  const order: ChipColor[] = ["gold", "blue", "red", "white"];
-  let remaining = amount;
-
-  for (const color of order) {
-    const value = CHIP_VALUES[color];
-    while (remaining >= value && chips.length < 8) {
-      chips.push(color);
-      remaining -= value;
-    }
-  }
-
-  if (chips.length === 0 && amount > 0) {
-    chips.push("white");
-  }
-
-  return chips;
+/** Pick 1-3 representative chip colors based on the magnitude of the amount. */
+function representativeChips(amount: number): ChipColor[] {
+  if (amount <= 0) return [];
+  if (amount < 100) return ["white"];
+  if (amount < 500) return ["red"];
+  if (amount < 1000) return ["red", "red"];
+  if (amount < 5000) return ["gold"];
+  if (amount < 10000) return ["gold", "blue"];
+  return ["gold", "gold", "blue"];
 }
 
 interface PixelChipStackProps {
@@ -128,8 +112,12 @@ interface PixelChipStackProps {
 }
 
 export function PixelChipStack({ amount, size = 2 }: PixelChipStackProps) {
-  const chips = breakIntoDenominations(amount);
+  const chips = representativeChips(amount);
   if (chips.length === 0) return null;
+
+  // Chip is 8*size wide, 7*size tall. Overlap so stack is compact.
+  const chipHeight = size * 7;
+  const overlap = Math.round(chipHeight * 0.6);
 
   return (
     <div
@@ -137,14 +125,13 @@ export function PixelChipStack({ amount, size = 2 }: PixelChipStackProps) {
         display: "inline-flex",
         flexDirection: "column-reverse",
         alignItems: "center",
-        gap: "0px",
       }}
     >
       {chips.map((color, i) => (
         <div
           key={i}
           style={{
-            marginTop: i > 0 ? `-${size * 4}px` : "0px",
+            marginTop: i > 0 ? `-${overlap}px` : "0px",
             zIndex: i,
           }}
         >
@@ -161,7 +148,7 @@ interface PotChipPileProps {
 }
 
 export function PotChipPile({ amount, size = 3 }: PotChipPileProps) {
-  const chips = breakIntoDenominations(amount);
+  const chips = representativeChips(amount);
   if (chips.length === 0) return null;
 
   return (
@@ -177,7 +164,7 @@ export function PotChipPile({ amount, size = 3 }: PotChipPileProps) {
         <div
           key={i}
           style={{
-            marginBottom: `${(i % 3) * size}px`,
+            marginBottom: `${(i % 2) * size}px`,
           }}
         >
           <PixelChip color={color} size={size} />

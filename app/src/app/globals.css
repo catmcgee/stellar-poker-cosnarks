@@ -186,6 +186,12 @@ body {
   50% { transform: scaleY(1.02); }
 }
 
+/* Wallet indicator dim pulse */
+@keyframes walletPulse {
+  0%, 100% { opacity: 0.6; }
+  50% { opacity: 1; }
+}
+
 /* Card deal animation */
 @keyframes cardDeal {
   0% { transform: translateY(-40px) rotate(-10deg); opacity: 0; }
