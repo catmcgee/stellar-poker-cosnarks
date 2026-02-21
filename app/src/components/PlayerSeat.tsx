@@ -11,6 +11,8 @@ interface PlayerSeatProps {
   isDealer: boolean;
   isUser: boolean;
   isWinner?: boolean;
+  isBot?: boolean;
+  labelOverride?: string;
 }
 
 export function PlayerSeat({
@@ -19,6 +21,8 @@ export function PlayerSeat({
   isDealer,
   isUser,
   isWinner = false,
+  isBot = false,
+  labelOverride,
 }: PlayerSeatProps) {
   const sprite = isUser ? 18 : opponentSprite(player.seat);
   const cardSize = isUser ? "md" : "sm";
@@ -61,17 +65,27 @@ export function PlayerSeat({
         color: isUser ? '#f1c40f' : '#95a5a6',
         textShadow: '1px 1px 0 rgba(0,0,0,0.5)',
       }}>
-        {isUser ? "— YOU —" : `${player.address.slice(0, 4)}...${player.address.slice(-4)}`}
+        {labelOverride ?? (isUser ? "— YOU —" : isBot ? "— AI BOT —" : `${player.address.slice(0, 4)}...${player.address.slice(-4)}`)}
         {isDealer && <span style={{ color: '#f1c40f', marginLeft: '4px' }}>[D]</span>}
       </div>
 
-      {/* Cat avatar */}
+      {/* Avatar */}
       <div style={{ marginBottom: '4px' }}>
-        <PixelCat
-          sprite={sprite}
-          size={isUser ? 72 : 48}
-          isUser={isUser}
-        />
+        {isBot ? (
+          <img
+            src="/cat_sprites/bot.png"
+            alt="AI Bot"
+            width={48}
+            height={48}
+            style={{ imageRendering: "pixelated" }}
+          />
+        ) : (
+          <PixelCat
+            sprite={sprite}
+            size={isUser ? 72 : 48}
+            isUser={isUser}
+          />
+        )}
       </div>
 
       {/* Cards */}
@@ -96,7 +110,7 @@ export function PlayerSeat({
           color: '#27ae60',
           textShadow: '1px 1px 0 rgba(0,0,0,0.4)',
         }}>
-          {player.stack.toLocaleString()} XLM
+          {player.stack.toLocaleString()} CHIPS
         </span>
       </div>
 

@@ -152,6 +152,10 @@ async fn main() {
             post(api::request_showdown),
         )
         .route(
+            "/api/table/:table_id/player-action",
+            post(api::player_action),
+        )
+        .route(
             "/api/table/:table_id/player/:address/cards",
             get(api::get_player_cards),
         )

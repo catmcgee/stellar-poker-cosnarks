@@ -60,6 +60,21 @@ pub struct ShowdownResponse {
     pub tx_hash: Option<String>,
 }
 
+#[derive(Deserialize)]
+pub struct PlayerActionRequest {
+    pub action: String,
+    pub amount: Option<i128>,
+}
+
+#[derive(Serialize)]
+pub struct PlayerActionResponse {
+    pub status: String,
+    pub action: String,
+    pub amount: Option<i128>,
+    pub player: String,
+    pub tx_hash: Option<String>,
+}
+
 #[derive(Serialize)]
 pub struct TableStateResponse {
     pub state: String,
@@ -804,6 +819,91 @@ pub async fn request_showdown(
         winner_index,
         proof_size: showdown_proof.proof.len(),
         session_id: showdown_proof.session_id,
+        tx_hash,
+    }))
+}
+
+/// POST /api/table/{table_id}/player-action
+///
+/// Submit a player betting action to the on-chain poker-table contract.
+/// In lobby mode, authenticated wallet addresses are translated to their
+/// mapped on-chain seat address.
+pub async fn player_action(
+    State(state): State<AppState>,
+    Path(table_id): Path<u32>,
+    headers: HeaderMap,
+    Json(req): Json<PlayerActionRequest>,
+) -> Result<Json<PlayerActionResponse>, StatusCode> {
+    validate_table_id(table_id)?;
+
+    let normalized = req.action.trim().to_ascii_lowercase();
+    let amount = match normalized.as_str() {
+        "fold" | "check" | "call" | "allin" | "all_in" => None,
+        "bet" | "raise" => {
+            let amount = req.amount.ok_or(StatusCode::BAD_REQUEST)?;
+            if amount <= 0 {
+                return Err(StatusCode::BAD_REQUEST);
+            }
+            Some(amount)
+        }
+        _ => return Err(StatusCode::BAD_REQUEST),
+    };
+
+    let action_key = format!("player_action:{}", normalized);
+    enforce_rate_limit(&state, &headers, table_id, &action_key).await?;
+    let auth = validate_signed_request(&state, &headers, table_id, &action_key, None).await?;
+
+    if !state.soroban_config.is_configured() {
+        return Err(StatusCode::SERVICE_UNAVAILABLE);
+    }
+
+    let mapped_player = {
+        let lobby = state.lobby_assignments.read().await;
+        lobby
+            .get(&table_id)
+            .and_then(|table_lobby| table_lobby.get(&auth.address))
+            .cloned()
+    };
+
+    let player_address = if let Some(mapped) = mapped_player {
+        mapped
+    } else if state.soroban_config.has_identity_for_player(&auth.address) {
+        auth.address.clone()
+    } else {
+        return Err(StatusCode::UNAUTHORIZED);
+    };
+
+    let tx_hash = soroban::submit_player_action(
+        &state.soroban_config,
+        table_id,
+        &player_address,
+        &normalized,
+        amount,
+    )
+    .await
+    .map_err(|e| {
+        tracing::error!(
+            "player_action failed: table={}, caller={}, player={}, action={}, amount={:?}, err={}",
+            table_id,
+            auth.address,
+            player_address,
+            normalized,
+            amount,
+            e
+        );
+        if e.contains("Error(Contract,") {
+            StatusCode::CONFLICT
+        } else {
+            StatusCode::BAD_GATEWAY
+        }
+    })?;
+
+    let tx_hash = if tx_hash.is_empty() { None } else { Some(tx_hash) };
+    Ok(Json(PlayerActionResponse {
+        status: "applied".to_string(),
+        action: normalized,
+        amount,
+        player: player_address,
         tx_hash,
     }))
 }

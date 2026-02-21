@@ -59,62 +59,34 @@ export function ActionPanel({
     );
   }
 
-  if (phase === "showdown" || phase === "settlement") {
+  if (phase === "showdown") {
+    return null;
+  }
+
+  if (phase === "settlement") {
     return (
       <div className="flex flex-col items-center gap-3">
-        <div className="flex items-center gap-2">
-          <span className="text-[10px]" style={{ color: '#95a5a6' }}>
-            {phase === "showdown" ? "SHOWDOWN..." : "HAND COMPLETE"}
-          </span>
-          {onChainConfirmed && (
-            <span className="text-[9px] flex items-center gap-1" style={{ color: '#27ae60' }}>
-              <PixelChip color="gold" size={2} />
-              ON-CHAIN
-            </span>
-          )}
-        </div>
-        {phase === "settlement" && (
-          <button
-            onClick={() => onAction("start")}
-            disabled={!canStartHand || loading}
-            className="pixel-btn pixel-btn-green text-[11px]"
-            style={{ padding: "8px 18px", opacity: canStartHand && !loading ? 1 : 0.6 }}
-          >
-            NEW HAND
-          </button>
-        )}
-        {statusHint && (
-          <span className="text-[9px]" style={{ color: "#f39c12" }}>
-            {statusHint}
-          </span>
-        )}
+        <button
+          onClick={() => onAction("start")}
+          disabled={!canStartHand || loading}
+          className="pixel-btn pixel-btn-green text-[11px]"
+          style={{ padding: "8px 18px", opacity: canStartHand && !loading ? 1 : 0.6 }}
+        >
+          NEW HAND
+        </button>
       </div>
     );
   }
 
   // Active betting phase (preflop, flop, turn, river)
   const isActive = ["preflop", "flop", "turn", "river"].includes(phase);
-  const disabled = !isMyTurn || loading;
+  const soloDisabled = isSolo;
+  const disabled = !isMyTurn || loading || soloDisabled;
   if (!isActive) {
-    return (
-      <div className="text-center">
-        <span className="text-[10px]" style={{ color: "#95a5a6" }}>
-          WAITING...
-        </span>
-      </div>
-    );
+    return null;
   }
 
-  // In solo mode, the bot auto-handles all betting — hide the panel
-  if (isSolo) {
-    return (
-      <div className="text-center">
-        <span className="text-[10px]" style={{ color: "#95a5a6", fontStyle: "italic" }}>
-          AI OPPONENT AUTO-PLAYS — WAITING FOR NEXT PHASE...
-        </span>
-      </div>
-    );
-  }
+  const soloDisabledTitle = "Disabled in Solo vs AI mode";
 
   return (
     <div
@@ -146,12 +118,18 @@ export function ActionPanel({
         </div>
       </div>
 
+      {soloDisabled && (
+        <span className="text-[9px]" style={{ color: "#f39c12", fontStyle: "italic" }}>
+          SOLO VS AI: betting is disabled. Dealer auto-plays checks/calls.
+        </span>
+      )}
       {/* Action buttons */}
       <div className="flex items-center gap-2">
         {/* FOLD */}
         <button
           onClick={() => onAction("fold")}
           disabled={disabled}
+          title={soloDisabled ? soloDisabledTitle : undefined}
           className="pixel-btn text-[10px]"
           style={{
             padding: "6px 14px",
@@ -168,6 +146,7 @@ export function ActionPanel({
         <button
           onClick={() => onAction(callAmount === 0 ? "check" : "call", callAmount)}
           disabled={disabled}
+          title={soloDisabled ? soloDisabledTitle : undefined}
           className="pixel-btn text-[10px]"
           style={{
             padding: "6px 14px",
@@ -184,6 +163,7 @@ export function ActionPanel({
         <button
           onClick={() => onAction(currentBet === 0 ? "bet" : "raise", betAmount || minBet)}
           disabled={disabled || myStack <= callAmount}
+          title={soloDisabled ? soloDisabledTitle : undefined}
           className="pixel-btn text-[10px]"
           style={{
             padding: "6px 14px",
@@ -200,6 +180,7 @@ export function ActionPanel({
         <button
           onClick={() => onAction("allin", myStack)}
           disabled={disabled || myStack <= 0}
+          title={soloDisabled ? soloDisabledTitle : undefined}
           className="pixel-btn text-[10px]"
           style={{
             padding: "6px 14px",
@@ -215,7 +196,7 @@ export function ActionPanel({
       </div>
 
       {/* Bet slider + quick buttons */}
-      {!disabled && myStack > callAmount && (
+      {!disabled && !soloDisabled && myStack > callAmount && (
         <div className="flex items-center gap-3 w-full max-w-sm">
           <input
             type="range"

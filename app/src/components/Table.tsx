@@ -16,9 +16,11 @@ import {
   trySilentReconnect,
   type WalletSession,
 } from "@/lib/freighter";
+import { GameBoyButton, GameBoyModal } from "./GameBoyModal";
 
 type ActiveRequest = "deal" | "flop" | "turn" | "river" | "showdown" | null;
 type PlayMode = "single" | "headsup" | "multi";
+const SOLO_AUTO_ADVANCE = false;
 
 interface TableProps {
   tableId: number;
@@ -89,6 +91,7 @@ export function Table({ tableId, initialPlayMode }: TableProps) {
   const [winnerAddress, setWinnerAddress] = useState<string | null>(null);
   const [lobby, setLobby] = useState<api.TableLobbyResponse | null>(null);
   const [botLine, setBotLine] = useState<string | null>(null);
+  const [gameboyOpen, setGameboyOpen] = useState(false);
   const [elapsed, setElapsed] = useState(0);
   const botTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const botStepRef = useRef<string>("");
@@ -417,7 +420,27 @@ export function Table({ tableId, initialPlayMode }: TableProps) {
     try {
       const result = await api.requestShowdown(tableId, wallet);
       const txHash = normalizeTxHash(result.tx_hash);
-      setWinnerAddress(result.winner);
+
+      // Map the winner's chain address to a wallet address via the lobby
+      let resolvedWinner = result.winner;
+      if (lobby?.seats) {
+        for (const seat of lobby.seats) {
+          if (seat.chain_address === result.winner && seat.wallet_address) {
+            resolvedWinner = seat.wallet_address;
+            break;
+          }
+        }
+      }
+      // Also check if the winner_index maps to a known player in our game state
+      if (resolvedWinner === result.winner) {
+        // Chain address didn't match any lobby wallet — try matching by seat index
+        const playerByIndex = game.players[result.winner_index];
+        if (playerByIndex && isStellarAddress(playerByIndex.address)) {
+          resolvedWinner = playerByIndex.address;
+        }
+      }
+      setWinnerAddress(resolvedWinner);
+
       setGame((prev) => ({
         ...prev,
         phase: "settlement",
@@ -435,10 +458,10 @@ export function Table({ tableId, initialPlayMode }: TableProps) {
       setLoading(false);
       setActiveRequest(null);
     }
-  }, [playMode, syncOnChainState, tableId, wallet]);
+  }, [game.players, lobby, playMode, syncOnChainState, tableId, wallet]);
 
   const handleAction = useCallback(
-    async (action: string) => {
+    async (action: string, amount?: number) => {
       if (action === "showdown") {
         if (!wallet) {
           setError("Connect Freighter wallet before requesting showdown");
@@ -454,7 +477,29 @@ export function Table({ tableId, initialPlayMode }: TableProps) {
           console.log(`[single-player] betting action: ${action} (auto-handled by coordinator)`);
           return;
         }
-        setError("Multiplayer betting actions are not yet wired to the API.");
+        if (!wallet) {
+          setError("Connect Freighter wallet before betting");
+          return;
+        }
+        setLoading(true);
+        setError(null);
+        try {
+          const normalizedAmount =
+            typeof amount === "number" && Number.isFinite(amount)
+              ? Math.max(1, Math.floor(amount))
+              : undefined;
+          await api.playerAction(
+            tableId,
+            action as "fold" | "check" | "call" | "bet" | "raise" | "allin",
+            normalizedAmount,
+            wallet
+          );
+          await syncOnChainState();
+        } catch (e) {
+          setError(e instanceof Error ? e.message : "Bet action failed");
+        } finally {
+          setLoading(false);
+        }
         return;
       }
 
@@ -469,7 +514,7 @@ export function Table({ tableId, initialPlayMode }: TableProps) {
       }
       await handleDeal(players);
     },
-    [wallet, resolvePlayersForDeal, handleDeal, handleShowdown]
+    [wallet, playMode, syncOnChainState, tableId, resolvePlayersForDeal, handleDeal, handleShowdown]
   );
 
   const currentBet = Math.max(...game.players.map((p) => p.betThisRound), 0);
@@ -488,7 +533,7 @@ export function Table({ tableId, initialPlayMode }: TableProps) {
   }, []);
 
   useEffect(() => {
-    if (playMode !== "single" || !wallet || loading) {
+    if (playMode !== "single" || !wallet || loading || !SOLO_AUTO_ADVANCE) {
       return;
     }
 
@@ -565,61 +610,68 @@ export function Table({ tableId, initialPlayMode }: TableProps) {
       const timer = ` [${formatElapsed(elapsed)}]`;
       switch (activeRequest) {
         case "deal":
-          return `Dealer: SHUFFLING & GENERATING DEAL PROOF... (~30-60s)${timer}`;
+          return `SHUFFLING & GENERATING DEAL PROOF... (~30-60s)${timer}`;
         case "flop":
-          return `Dealer: GENERATING REVEAL PROOF... (~20-40s)${timer}`;
+          return `GENERATING REVEAL PROOF... (~20-40s)${timer}`;
         case "turn":
-          return `Dealer: GENERATING REVEAL PROOF... (~20-40s)${timer}`;
+          return `GENERATING REVEAL PROOF... (~20-40s)${timer}`;
         case "river":
-          return `Dealer: GENERATING REVEAL PROOF... (~20-40s)${timer}`;
+          return `GENERATING REVEAL PROOF... (~20-40s)${timer}`;
         case "showdown":
-          return `Dealer: VERIFYING SHOWDOWN — THIS TAKES 2-4 MINUTES. PLEASE WAIT.${timer}`;
+          return `VERIFYING SHOWDOWN — THIS TAKES 2-4 MINUTES. PLEASE WAIT.${timer}`;
         default:
-          return `Dealer: One moment...${timer}`;
+          return `One moment...${timer}`;
       }
     }
 
-    if (playMode === "single" && botLine && game.phase !== "waiting") {
-      return `Dealer: ${botLine}`;
+    if (playMode === "single" && SOLO_AUTO_ADVANCE && botLine && game.phase !== "waiting") {
+      return `${botLine}`;
     }
 
     if (wallet && !isWalletSeated && seatedAddresses.length > 0) {
-      return `Dealer: On-chain seats are ${tableSeatLabel}. Click DEAL CARDS to run a hand with your connected wallet.`;
+      return `On-chain seats are ${tableSeatLabel}. Click DEAL CARDS to run a hand with your connected wallet.`;
     }
 
     switch (game.phase) {
       case "waiting":
         if (playMode === "single") {
-          return "Dealer: Solo mode. Join table, then click DEAL CARDS.";
+          return "Solo mode: betting is disabled and auto-progression is OFF. Use DEAL/REVEAL/SHOWDOWN buttons.";
         }
         if (playMode === "headsup") {
           if ((lobby?.joined_wallets ?? 0) < 2) {
-            return "Dealer: Two-player mode needs 2 joined wallets. Share table ID and wait for one join.";
+            return "Two-player mode needs 2 joined wallets. Share table ID and wait for one join.";
           }
-          return "Dealer: Heads-up is ready. Click DEAL CARDS.";
+          return "Heads-up is ready. Click DEAL CARDS.";
         }
         if ((lobby?.joined_wallets ?? 0) < 3) {
-          return "Dealer: 3-6 player mode needs at least 3 joined wallets.";
+          return "3-6 player mode needs at least 3 joined wallets.";
         }
-        return "Dealer: Multi-player table is ready. Click DEAL CARDS.";
+        return "Multi-player table is ready. Click DEAL CARDS.";
       case "dealing":
-        return "Dealer: Cards are being dealt.";
+        return "Cards are being dealt.";
       case "preflop":
-        return "Dealer: Preflop is live. Click DEAL FLOP when ready.";
+        return "Preflop is live. Click DEAL FLOP when ready.";
       case "flop":
-        return "Dealer: Flop is out. Click DEAL TURN.";
+        return "Flop is out. Click DEAL TURN.";
       case "turn":
-        return "Dealer: Turn card is out. Click DEAL RIVER.";
+        return "Turn card is out. Click DEAL RIVER.";
       case "river":
-        return "Dealer: River is out. Click SHOWDOWN.";
+        return "River is out. Click SHOWDOWN.";
       case "showdown":
-        return "Dealer: Showdown in progress.";
+        return "Showdown in progress.";
       case "settlement":
-        return winnerAddress
-          ? `Dealer: Hand complete. Winner: ${shortAddress(winnerAddress)}.`
-          : "Dealer: Hand complete. Start the next hand when ready.";
+        if (winnerAddress) {
+          if (userAddress && winnerAddress === userAddress) {
+            return "Hand complete. YOU WIN!";
+          }
+          if (playMode === "single" && userAddress && winnerAddress !== userAddress) {
+            return "Hand complete. AI WINS!";
+          }
+          return `Hand complete. Winner: ${shortAddress(winnerAddress)}.`;
+        }
+        return "Hand complete. Start the next hand when ready.";
       default:
-        return "Dealer: Ready when you are.";
+        return "Ready when you are.";
     }
   })();
 
@@ -650,6 +702,7 @@ export function Table({ tableId, initialPlayMode }: TableProps) {
             >
               TABLE #{tableId}
             </h1>
+            <GameBoyButton onClick={() => setGameboyOpen(true)} />
           </div>
 
           <div className="flex items-center gap-3">
@@ -657,27 +710,29 @@ export function Table({ tableId, initialPlayMode }: TableProps) {
               HAND #{game.handNumber} | {game.phase.toUpperCase()}
             </div>
 
-            {game.lastTxHash ? (
-              <a
-                href={`https://stellar.expert/explorer/testnet/tx/${game.lastTxHash}`}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="text-[9px]"
-                style={{ color: "#3498db", textDecoration: "none" }}
-              >
-                EXPLORER ↗
-              </a>
-            ) : (
-              <a
-                href="https://stellar.expert/explorer/testnet"
-                target="_blank"
-                rel="noopener noreferrer"
-                className="text-[9px]"
-                style={{ color: "#3498db", textDecoration: "none" }}
-              >
-                EXPLORER ↗
-              </a>
-            )}
+            {(() => {
+              const explorerUrl = game.lastTxHash
+                ? `https://stellar.expert/explorer/testnet/tx/${game.lastTxHash}`
+                : wallet
+                  ? `https://stellar.expert/explorer/testnet/account/${wallet.address}`
+                  : null;
+              if (!explorerUrl) return null;
+              return (
+                <a
+                  href={explorerUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="text-[9px]"
+                  style={{
+                    color: "#ffc078",
+                    textDecoration: "none",
+                    textShadow: "1px 1px 0 rgba(0,0,0,0.5)",
+                  }}
+                >
+                  {game.lastTxHash ? "VIEW TX ↗" : "EXPLORER ↗"}
+                </a>
+              );
+            })()}
 
             {wallet && (
               <div
@@ -791,6 +846,7 @@ export function Table({ tableId, initialPlayMode }: TableProps) {
                     isDealer={player.seat === game.dealerSeat}
                     isUser={false}
                     isWinner={!!winnerAddress && player.address === winnerAddress}
+                    isBot={playMode === "single"}
                   />
                 ))}
 
@@ -926,17 +982,6 @@ export function Table({ tableId, initialPlayMode }: TableProps) {
             <span className="text-[8px]" style={{ color: "#7f8c8d" }}>
               MPC: 3/3 NODES | TACEO CO-NOIR REP3
             </span>
-            {game.proofSize && (
-              <span
-                className="pixel-border-thin px-1 py-0.5 text-[8px]"
-                style={{
-                  background: "rgba(20, 12, 8, 0.6)",
-                  color: "#95a5a6",
-                }}
-              >
-                PROOF: {(game.proofSize / 1024).toFixed(1)}KB
-              </span>
-            )}
           </div>
           {game.lastTxHash && (
             <div className="flex items-center gap-1">
@@ -951,7 +996,7 @@ export function Table({ tableId, initialPlayMode }: TableProps) {
                   href={`https://stellar.expert/explorer/testnet/tx/${game.lastTxHash}`}
                   target="_blank"
                   rel="noopener noreferrer"
-                  style={{ color: "#3498db" }}
+                  style={{ color: "#ffc078", textShadow: "1px 1px 0 rgba(0,0,0,0.5)" }}
                 >
                   {game.lastTxHash.slice(0, 8)}...{game.lastTxHash.slice(-8)}
                 </a>
@@ -967,6 +1012,12 @@ export function Table({ tableId, initialPlayMode }: TableProps) {
           <PixelCat sprite={21} size={56} flipped />
         </div>
       </div>
+
+      <GameBoyModal
+        open={gameboyOpen}
+        onClose={() => setGameboyOpen(false)}
+        onLogout={() => setWallet(null)}
+      />
     </PixelWorld>
   );
 }

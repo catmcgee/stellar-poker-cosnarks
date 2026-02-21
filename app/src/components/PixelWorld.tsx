@@ -7,8 +7,61 @@ import { useState, useEffect, useRef, useCallback } from "react";
  * Click the sun to transition to night (crescent moon, stars, dark sky).
  * Click the moon to return to day. Music crossfades with the visual transition.
  */
+type SharedAudioState = {
+  day: HTMLAudioElement;
+  night: HTMLAudioElement;
+  started: boolean;
+  isNight: boolean;
+  masterVolume: number; // 0-1, user-controlled via GameBoy settings
+};
+
+let sharedAudioState: SharedAudioState | null = null;
+
+/** Expose audio elements so other components (e.g. GameBoyModal) can control volume. */
+export function getSharedAudio(): { day: HTMLAudioElement; night: HTMLAudioElement } | null {
+  if (!sharedAudioState) return null;
+  return { day: sharedAudioState.day, night: sharedAudioState.night };
+}
+
+/** Get/set master volume (0-1). Used by GameBoyModal volume slider. */
+export function getMasterVolume(): number {
+  return sharedAudioState?.masterVolume ?? 1;
+}
+
+export function setMasterVolume(v: number): void {
+  if (!sharedAudioState) return;
+  sharedAudioState.masterVolume = Math.max(0, Math.min(1, v));
+  // Apply immediately to whichever track is active
+  const mv = sharedAudioState.masterVolume;
+  if (!sharedAudioState.day.paused) sharedAudioState.day.volume = mv;
+  if (!sharedAudioState.night.paused) sharedAudioState.night.volume = mv;
+}
+
+function ensureSharedAudioState(): SharedAudioState {
+  if (sharedAudioState) {
+    return sharedAudioState;
+  }
+
+  const day = new Audio("/music/day-music.mp3");
+  day.loop = true;
+  day.volume = 1;
+
+  const night = new Audio("/music/night-music.mp3");
+  night.loop = true;
+  night.volume = 0;
+
+  sharedAudioState = {
+    day,
+    night,
+    started: false,
+    isNight: false,
+    masterVolume: 1,
+  };
+  return sharedAudioState;
+}
+
 export function PixelWorld({ children }: { children: React.ReactNode }) {
-  const [isNight, setIsNight] = useState(false);
+  const [isNight, setIsNight] = useState(() => sharedAudioState?.isNight ?? false);
   const dayAudioRef = useRef<HTMLAudioElement | null>(null);
   const nightAudioRef = useRef<HTMLAudioElement | null>(null);
   const fadeRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -17,30 +70,29 @@ export function PixelWorld({ children }: { children: React.ReactNode }) {
   const FADE_MS = 2000; // matches visual transition duration
   const FADE_STEP = 50; // ms per volume tick
 
-  // Create audio elements once on mount
+  // Link this component instance to shared global audio so music persists
+  // across route changes and does not restart.
   useEffect(() => {
-    const day = new Audio("/music/day-music.mp3");
-    day.loop = true;
-    day.volume = 1;
-    const night = new Audio("/music/night-music.mp3");
-    night.loop = true;
-    night.volume = 0;
-    dayAudioRef.current = day;
-    nightAudioRef.current = night;
+    const shared = ensureSharedAudioState();
+    dayAudioRef.current = shared.day;
+    nightAudioRef.current = shared.night;
+    musicStartedRef.current = shared.started;
+    setIsNight(shared.isNight);
 
     return () => {
-      day.pause();
-      night.pause();
-      day.src = "";
-      night.src = "";
+      if (fadeRef.current) {
+        clearInterval(fadeRef.current);
+        fadeRef.current = null;
+      }
     };
   }, []);
 
-  // Crossfade when isNight changes
+  // Crossfade when isNight changes — respects master volume
   const crossfade = useCallback((toNight: boolean) => {
     const fadeIn = toNight ? nightAudioRef.current : dayAudioRef.current;
     const fadeOut = toNight ? dayAudioRef.current : nightAudioRef.current;
     if (!fadeIn || !fadeOut) return;
+    const mv = sharedAudioState?.masterVolume ?? 1;
 
     // Start the incoming track if paused
     fadeIn.play().catch(() => {});
@@ -52,8 +104,8 @@ export function PixelWorld({ children }: { children: React.ReactNode }) {
     fadeRef.current = setInterval(() => {
       step++;
       const progress = Math.min(step / steps, 1);
-      fadeIn.volume = Math.min(progress, 1);
-      fadeOut.volume = Math.max(1 - progress, 0);
+      fadeIn.volume = Math.min(progress * mv, mv);
+      fadeOut.volume = Math.max((1 - progress) * mv, 0);
 
       if (step >= steps) {
         if (fadeRef.current) clearInterval(fadeRef.current);
@@ -66,12 +118,15 @@ export function PixelWorld({ children }: { children: React.ReactNode }) {
 
   // Start music on first user click anywhere in the world
   const handleFirstInteraction = useCallback(() => {
-    if (musicStartedRef.current) return;
+    const shared = ensureSharedAudioState();
+    if (musicStartedRef.current || shared.started) return;
     musicStartedRef.current = true;
+    shared.started = true;
+    const mv = shared.masterVolume;
     const active = isNight ? nightAudioRef.current : dayAudioRef.current;
     const inactive = isNight ? dayAudioRef.current : nightAudioRef.current;
     if (active) {
-      active.volume = 1;
+      active.volume = mv;
       active.play().catch(() => {});
     }
     if (inactive) {
@@ -103,6 +158,7 @@ export function PixelWorld({ children }: { children: React.ReactNode }) {
           handleFirstInteraction();
           const next = !isNight;
           setIsNight(next);
+          ensureSharedAudioState().isNight = next;
           crossfade(next);
         }}
         title={isNight ? "Switch to day" : "Switch to night"}
@@ -187,14 +243,13 @@ export function PixelWorld({ children }: { children: React.ReactNode }) {
         filter: isNight ? 'brightness(0.2) saturate(0.3)' : 'none',
         transition: `filter ${duration} ease-in-out`,
       }}>
-        <svg viewBox="0 0 1200 200" preserveAspectRatio="none" className="w-full h-full">
+        <svg viewBox="0 0 1200 200" preserveAspectRatio="none" className="w-full h-full" shapeRendering="crispEdges">
           <defs>
             <pattern id="farGrass" width="128" height="128" patternUnits="userSpaceOnUse">
               {grassTiles(['#5cb85c','#4cae4c','#68c468','#489848','#55b055','#6ed66e','#3d8b3d'], 8, 16, 3)}
             </pattern>
           </defs>
-          <path d="M0,120 Q150,40 300,100 Q450,50 600,90 Q750,30 900,80 Q1050,50 1200,70 L1200,200 L0,200 Z"
-                fill="url(#farGrass)" />
+          <path d={pixelHillPath(1200, 200, 120, 40, 16, 3)} fill="url(#farGrass)" />
         </svg>
       </div>
 
@@ -204,14 +259,13 @@ export function PixelWorld({ children }: { children: React.ReactNode }) {
         filter: isNight ? 'brightness(0.18) saturate(0.3)' : 'none',
         transition: `filter ${duration} ease-in-out`,
       }}>
-        <svg viewBox="0 0 1200 160" preserveAspectRatio="none" className="w-full h-full">
+        <svg viewBox="0 0 1200 160" preserveAspectRatio="none" className="w-full h-full" shapeRendering="crispEdges">
           <defs>
             <pattern id="midGrass" width="128" height="128" patternUnits="userSpaceOnUse">
               {grassTiles(['#4cae4c','#3d8b3d','#5cb85c','#2d6b2d','#45a845','#6ed66e','#358435','#8bc34a'], 8, 16, 7)}
             </pattern>
           </defs>
-          <path d="M0,80 Q100,30 250,70 Q400,20 550,60 Q700,10 850,55 Q1000,25 1200,50 L1200,160 L0,160 Z"
-                fill="url(#midGrass)" />
+          <path d={pixelHillPath(1200, 160, 80, 10, 16, 7)} fill="url(#midGrass)" />
         </svg>
       </div>
 
@@ -221,7 +275,7 @@ export function PixelWorld({ children }: { children: React.ReactNode }) {
         filter: isNight ? 'brightness(0.18) saturate(0.4)' : 'none',
         transition: `filter ${duration} ease-in-out`,
       }}>
-        <svg viewBox="0 0 1200 100" preserveAspectRatio="none" className="w-full h-full">
+        <svg viewBox="0 0 1200 100" preserveAspectRatio="none" className="w-full h-full" shapeRendering="crispEdges">
           <defs>
             <pattern id="fgGrass" width="128" height="128" patternUnits="userSpaceOnUse">
               {grassTiles(['#3d8b3d','#2d6b2d','#4cae4c','#27ae60','#358535','#5cb85c','#1e7a2e','#45a845'], 8, 16, 11)}
@@ -231,26 +285,44 @@ export function PixelWorld({ children }: { children: React.ReactNode }) {
         </svg>
       </div>
 
-      {/* Decorative bushes & flowers */}
-      <div style={{
-        filter: isNight ? 'brightness(0.18) saturate(0.3)' : 'none',
-        transition: `filter ${duration} ease-in-out`,
-      }}>
-        <PixelBush left="5%" bottom="11%" />
-        <PixelBush left="85%" bottom="10%" />
-        <PixelBush left="45%" bottom="11.5%" />
-        <PixelFlower left="15%" bottom="12%" color="#e74c3c" />
-        <PixelFlower left="30%" bottom="13%" color="#f1c40f" />
-        <PixelFlower left="70%" bottom="12.5%" color="#e74c3c" />
-        <PixelFlower left="90%" bottom="13%" color="#9b59b6" />
-      </div>
-
       {/* Content layer */}
       <div className="relative z-[10]">
         {children}
       </div>
     </div>
   );
+}
+
+/* Generate a pixelated (staircase-stepped) hill silhouette path.
+ * Uses sine waves for shape, then quantises y to step increments
+ * so the top edge looks like chunky pixel art. */
+function pixelHillPath(w: number, h: number, baseY: number, minY: number, step: number, seed: number): string {
+  const cols = Math.ceil(w / step);
+  const heights: number[] = [];
+  for (let i = 0; i <= cols; i++) {
+    const t = i / cols;
+    // Layered sine waves for organic hills
+    const raw = baseY
+      + (minY - baseY) * (
+        0.5 * Math.sin(t * Math.PI * 2 + seed)
+        + 0.3 * Math.sin(t * Math.PI * 4 + seed * 2.7)
+        + 0.2 * Math.sin(t * Math.PI * 6 + seed * 5.1)
+      );
+    // Quantise to step grid
+    heights.push(Math.round(raw / step) * step);
+  }
+
+  // Build staircase path: horizontal segment then vertical step
+  let d = `M0,${heights[0]}`;
+  for (let i = 1; i <= cols; i++) {
+    const x = Math.min(i * step, w);
+    d += ` H${x}`;
+    if (i <= cols && heights[i] !== undefined && heights[i] !== heights[i - 1]) {
+      d += ` V${heights[i]}`;
+    }
+  }
+  d += ` V${h} H0 Z`;
+  return d;
 }
 
 /* Deterministic mosaic tile generator for grass/hills.
@@ -283,7 +355,7 @@ function grassTiles(colors: string[], blockSize: number, gridSize: number, seed:
     for (let x = 0; x < gridSize; x++) {
       rects.push(
         <rect key={`${x}-${y}`} x={x * blockSize} y={y * blockSize}
-              width={blockSize} height={blockSize} fill={colors[grid[y][x]]} />
+              width={blockSize + 0.5} height={blockSize + 0.5} fill={colors[grid[y][x]]} shapeRendering="crispEdges" />
       );
     }
   }
@@ -334,37 +406,3 @@ function PixelCloud({ top, delay, speed, size }: { top: number; delay: number; s
   );
 }
 
-function PixelBush({ left, bottom }: { left: string; bottom: string }) {
-  return (
-    <div className="absolute z-[4]" style={{ left, bottom }}>
-      <div style={{
-        width: '6px',
-        height: '6px',
-        background: '#2d8b3d',
-        boxShadow: `
-          6px 0 0 #2d8b3d, 12px 0 0 #2d8b3d,
-          -6px 6px 0 #1e7a2e, 0 6px 0 #27ae60, 6px 6px 0 #2ecc71, 12px 6px 0 #27ae60, 18px 6px 0 #1e7a2e,
-          -6px 12px 0 #1e7a2e, 0 12px 0 #27ae60, 6px 12px 0 #2ecc71, 12px 12px 0 #27ae60, 18px 12px 0 #1e7a2e,
-          0 18px 0 #1e7a2e, 6px 18px 0 #27ae60, 12px 18px 0 #1e7a2e
-        `,
-      }} />
-    </div>
-  );
-}
-
-function PixelFlower({ left, bottom, color }: { left: string; bottom: string; color: string }) {
-  return (
-    <div className="absolute z-[4]" style={{ left, bottom }}>
-      <div style={{
-        width: '4px',
-        height: '4px',
-        background: '#27ae60',
-        boxShadow: `
-          0 -4px 0 ${color}, 4px 0 0 ${color}, 0 4px 0 #27ae60, -4px 0 0 ${color},
-          0 -8px 0 ${color},
-          0 4px 0 #1e7a2e, 0 8px 0 #1e7a2e
-        `,
-      }} />
-    </div>
-  );
-}

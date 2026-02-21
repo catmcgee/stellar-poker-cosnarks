@@ -75,6 +75,10 @@ impl SorobanConfig {
             .find(|(address, _)| address == player_address)
             .map(|(_, identity)| identity.as_str())
     }
+
+    pub fn has_identity_for_player(&self, player_address: &str) -> bool {
+        self.identity_for_player(player_address).is_some()
+    }
 }
 
 const INSTRUCTION_LEEWAY_STEPS: [u64; 4] = [0, 50_000_000, 200_000_000, 500_000_000];
@@ -352,6 +356,69 @@ async fn maybe_auto_advance_betting_if_phase(
         "auto-advance before {} exceeded {} actions while phase remained {}",
         reason, MAX_AUTO_ACTIONS, expected_phase
     ))
+}
+
+/// Submit a player betting action to the on-chain table contract.
+///
+/// The source identity is resolved from configured PLAYERn_ADDRESS/PLAYERn_IDENTITY.
+pub async fn submit_player_action(
+    config: &SorobanConfig,
+    table_id: u32,
+    player_address: &str,
+    action: &str,
+    amount: Option<i128>,
+) -> Result<String, String> {
+    if !config.is_configured() {
+        return Err("Soroban not configured".to_string());
+    }
+
+    let source_identity = config.identity_for_player(player_address).ok_or_else(|| {
+        format!(
+            "no local identity configured for player {} (set PLAYERn_ADDRESS/PLAYERn_IDENTITY)",
+            player_address
+        )
+    })?;
+
+    let action_lower = action.to_ascii_lowercase();
+    let action_json = match action_lower.as_str() {
+        "fold" => "\"Fold\"".to_string(),
+        "check" => "\"Check\"".to_string(),
+        "call" => "\"Call\"".to_string(),
+        "allin" | "all_in" => "\"AllIn\"".to_string(),
+        "bet" => {
+            let value = amount.ok_or("bet requires amount")?;
+            if value <= 0 {
+                return Err("bet amount must be positive".to_string());
+            }
+            format!("{{\"Bet\":\"{}\"}}", value)
+        }
+        "raise" => {
+            let value = amount.ok_or("raise requires amount")?;
+            if value <= 0 {
+                return Err("raise amount must be positive".to_string());
+            }
+            format!("{{\"Raise\":\"{}\"}}", value)
+        }
+        _ => return Err(format!("unsupported action '{}'", action)),
+    };
+
+    let onchain_table_id = resolve_onchain_table_id(config, table_id);
+    let output = invoke_contract_with_source_retries(
+        config,
+        source_identity,
+        vec![
+            "player_action".to_string(),
+            "--table_id".to_string(),
+            onchain_table_id.to_string(),
+            "--player".to_string(),
+            player_address.to_string(),
+            "--action".to_string(),
+            action_json,
+        ],
+    )
+    .await?;
+
+    parse_tx_result(output)
 }
 
 /// Submit a deal proof to the on-chain poker-table contract via `commit_deal`.

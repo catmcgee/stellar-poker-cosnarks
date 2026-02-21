@@ -19,7 +19,7 @@ export function Board({ cards, pot }: BoardProps) {
           textShadow: '1px 1px 0 rgba(0,0,0,0.6)',
           marginLeft: '4px',
         }}>
-          POT: {pot.toLocaleString()} XLM
+          POT: {pot.toLocaleString()} CHIPS
         </span>
       </div>
 

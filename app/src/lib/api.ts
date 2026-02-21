@@ -1,4 +1,20 @@
 const API_BASE = process.env.NEXT_PUBLIC_COORDINATOR_URL || "http://localhost:8080";
+const INSECURE_AUTH_ENV = process.env.NEXT_PUBLIC_ALLOW_INSECURE_DEV_AUTH;
+
+function parseEnvBool(value: string | undefined): boolean | null {
+  if (value === undefined) return null;
+  const v = value.trim().toLowerCase();
+  if (["1", "true", "yes", "on"].includes(v)) return true;
+  if (["0", "false", "no", "off"].includes(v)) return false;
+  return null;
+}
+
+const isLocalApiBase =
+  API_BASE.startsWith("http://localhost") ||
+  API_BASE.startsWith("https://localhost") ||
+  API_BASE.startsWith("http://127.0.0.1") ||
+  API_BASE.startsWith("https://127.0.0.1");
+const USE_INSECURE_DEV_AUTH = parseEnvBool(INSECURE_AUTH_ENV) ?? isLocalApiBase;
 
 export interface DealResponse {
   status: string;
@@ -23,6 +39,14 @@ export interface ShowdownResponse {
   winner_index: number;
   proof_size: number;
   session_id: string;
+  tx_hash: string | null;
+}
+
+export interface PlayerActionResponse {
+  status: string;
+  action: string;
+  amount: number | null;
+  player: string;
   tx_hash: string | null;
 }
 
@@ -148,21 +172,65 @@ async function buildAuthHeaders(
   };
 }
 
+function buildInsecureHeaders(auth: AuthSigner): Record<string, string> {
+  return {
+    "x-player-address": auth.address,
+  };
+}
+
+function withMergedHeaders(
+  init: RequestInit,
+  extra: Record<string, string>
+): RequestInit {
+  const merged = new Headers(init.headers);
+  for (const [key, value] of Object.entries(extra)) {
+    merged.set(key, value);
+  }
+  return {
+    ...init,
+    headers: merged,
+  };
+}
+
+async function authedFetch(
+  url: string,
+  init: RequestInit,
+  tableId: number,
+  action: string,
+  auth: AuthSigner
+): Promise<Response> {
+  if (USE_INSECURE_DEV_AUTH) {
+    const insecureAttempt = await fetch(
+      url,
+      withMergedHeaders(init, buildInsecureHeaders(auth))
+    );
+    if (insecureAttempt.status !== 401) {
+      return insecureAttempt;
+    }
+  }
+
+  const signedHeaders = await buildAuthHeaders(tableId, action, auth);
+  return fetch(url, withMergedHeaders(init, signedHeaders));
+}
+
 export async function requestDeal(
   tableId: number,
   players: string[] = [],
   auth: AuthSigner
 ): Promise<DealResponse> {
-  const headers = await buildAuthHeaders(tableId, "request_deal", auth);
-
-  const res = await fetch(`${API_BASE}/api/table/${tableId}/request-deal`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      ...headers,
+  const res = await authedFetch(
+    `${API_BASE}/api/table/${tableId}/request-deal`,
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ players }),
     },
-    body: JSON.stringify({ players }),
-  });
+    tableId,
+    "request_deal",
+    auth
+  );
   if (!res.ok) {
     throw new Error(await readApiError(res, `Deal failed: ${res.status}`));
   }
@@ -173,15 +241,19 @@ export async function createTable(
   auth: AuthSigner,
   maxPlayers: number
 ): Promise<CreateTableResponse> {
-  const headers = await buildAuthHeaders(0, "create_table", auth);
-  const res = await fetch(`${API_BASE}/api/tables/create`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      ...headers,
+  const res = await authedFetch(
+    `${API_BASE}/api/tables/create`,
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ max_players: maxPlayers }),
     },
-    body: JSON.stringify({ max_players: maxPlayers }),
-  });
+    0,
+    "create_table",
+    auth
+  );
   if (!res.ok) {
     throw new Error(await readApiError(res, `Create table failed: ${res.status}`));
   }
@@ -192,11 +264,15 @@ export async function joinTable(
   tableId: number,
   auth: AuthSigner
 ): Promise<JoinTableResponse> {
-  const headers = await buildAuthHeaders(tableId, "join_table", auth);
-  const res = await fetch(`${API_BASE}/api/table/${tableId}/join`, {
-    method: "POST",
-    headers,
-  });
+  const res = await authedFetch(
+    `${API_BASE}/api/table/${tableId}/join`,
+    {
+      method: "POST",
+    },
+    tableId,
+    "join_table",
+    auth
+  );
   if (!res.ok) {
     throw new Error(await readApiError(res, `Join table failed: ${res.status}`));
   }
@@ -226,16 +302,15 @@ export async function requestReveal(
   phase: "flop" | "turn" | "river",
   auth: AuthSigner
 ): Promise<RevealResponse> {
-  const headers = await buildAuthHeaders(
+  const res = await authedFetch(
+    `${API_BASE}/api/table/${tableId}/request-reveal/${phase}`,
+    {
+      method: "POST",
+    },
     tableId,
     `request_reveal:${phase}`,
     auth
   );
-
-  const res = await fetch(`${API_BASE}/api/table/${tableId}/request-reveal/${phase}`, {
-    method: "POST",
-    headers,
-  });
   if (!res.ok) {
     throw new Error(await readApiError(res, `Reveal failed: ${res.status}`));
   }
@@ -246,14 +321,42 @@ export async function requestShowdown(
   tableId: number,
   auth: AuthSigner
 ): Promise<ShowdownResponse> {
-  const headers = await buildAuthHeaders(tableId, "request_showdown", auth);
-
-  const res = await fetch(`${API_BASE}/api/table/${tableId}/request-showdown`, {
-    method: "POST",
-    headers,
-  });
+  const res = await authedFetch(
+    `${API_BASE}/api/table/${tableId}/request-showdown`,
+    {
+      method: "POST",
+    },
+    tableId,
+    "request_showdown",
+    auth
+  );
   if (!res.ok) {
     throw new Error(await readApiError(res, `Showdown failed: ${res.status}`));
+  }
+  return res.json();
+}
+
+export async function playerAction(
+  tableId: number,
+  action: "fold" | "check" | "call" | "bet" | "raise" | "allin",
+  amount: number | undefined,
+  auth: AuthSigner
+): Promise<PlayerActionResponse> {
+  const res = await authedFetch(
+    `${API_BASE}/api/table/${tableId}/player-action`,
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ action, amount }),
+    },
+    tableId,
+    `player_action:${action}`,
+    auth
+  );
+  if (!res.ok) {
+    throw new Error(await readApiError(res, `Player action failed: ${res.status}`));
   }
   return res.json();
 }
@@ -263,11 +366,13 @@ export async function getPlayerCards(
   address: string,
   auth: AuthSigner
 ): Promise<PlayerCardsResponse> {
-  const headers = await buildAuthHeaders(tableId, "get_player_cards", auth);
-
-  const res = await fetch(`${API_BASE}/api/table/${tableId}/player/${address}/cards`, {
-    headers,
-  });
+  const res = await authedFetch(
+    `${API_BASE}/api/table/${tableId}/player/${address}/cards`,
+    {},
+    tableId,
+    "get_player_cards",
+    auth
+  );
   if (!res.ok) {
     throw new Error(await readApiError(res, `Failed to get cards: ${res.status}`));
   }

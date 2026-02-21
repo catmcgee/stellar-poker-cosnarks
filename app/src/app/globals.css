@@ -168,6 +168,7 @@ body {
   50% { opacity: 1; transform: scale(1) rotate(180deg); }
 }
 
+
 /* Star twinkle for night mode */
 @keyframes twinkle {
   0%, 100% { opacity: 0.2; }
@@ -190,6 +191,12 @@ body {
 @keyframes walletPulse {
   0%, 100% { opacity: 0.6; }
   50% { opacity: 1; }
+}
+
+/* Game Boy modal slide in */
+@keyframes gameboySlideIn {
+  0% { transform: translateY(30px) scale(0.95); opacity: 0; }
+  100% { transform: translateY(0) scale(1); opacity: 1; }
 }
 
 /* Card deal animation */
