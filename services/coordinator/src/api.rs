@@ -5,9 +5,12 @@ use axum::{
     http::{HeaderMap, StatusCode},
     Json,
 };
+use ark_bn254::Fr;
+use ark_ff::PrimeField;
 use base64::Engine;
 use ed25519_dalek::{Signature, Verifier, VerifyingKey};
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -20,6 +23,7 @@ const MIN_PLAYERS: usize = 2;
 const AUTH_SKEW_SECS: i64 = 300;
 const RATE_LIMIT_WINDOW_SECS: u64 = 60;
 const RATE_LIMIT_MAX_REQUESTS: usize = 60;
+const ALLOW_INSECURE_DEV_AUTH_ENV: &str = "ALLOW_INSECURE_DEV_AUTH";
 // Proof size varies by circuit and transcript hasher — not hardcoded.
 
 #[derive(Deserialize)]
@@ -76,8 +80,255 @@ pub struct CommitteeStatusResponse {
     pub status: String,
 }
 
+#[derive(Deserialize)]
+pub struct CreateTableRequest {
+    pub max_players: Option<u32>,
+}
+
+#[derive(Serialize)]
+pub struct CreateTableResponse {
+    pub table_id: u32,
+    pub max_players: u32,
+    pub joined_wallets: usize,
+}
+
+#[derive(Serialize)]
+pub struct OpenTablesResponse {
+    pub tables: Vec<OpenTableInfo>,
+}
+
+#[derive(Serialize)]
+pub struct OpenTableInfo {
+    pub table_id: u32,
+    pub phase: String,
+    pub max_players: u32,
+    pub joined_wallets: usize,
+    pub open_wallet_slots: usize,
+}
+
+#[derive(Serialize)]
+pub struct JoinTableResponse {
+    pub table_id: u32,
+    pub seat_index: u32,
+    pub seat_address: String,
+    pub joined_wallets: usize,
+    pub max_players: u32,
+}
+
+#[derive(Serialize)]
+pub struct TableLobbyResponse {
+    pub table_id: u32,
+    pub phase: String,
+    pub max_players: u32,
+    pub seats: Vec<LobbySeat>,
+    pub joined_wallets: usize,
+}
+
+#[derive(Serialize)]
+pub struct LobbySeat {
+    pub seat_index: u32,
+    pub chain_address: String,
+    pub wallet_address: Option<String>,
+}
+
 struct AuthContext {
     address: String,
+}
+
+/// POST /api/tables/create
+///
+/// Creates a new on-chain table by copying config from the reference table,
+/// then pre-seeds on-chain seats with configured local player identities.
+pub async fn create_table(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(req): Json<CreateTableRequest>,
+) -> Result<Json<CreateTableResponse>, StatusCode> {
+    if !state.soroban_config.is_configured() {
+        return Err(StatusCode::SERVICE_UNAVAILABLE);
+    }
+
+    enforce_rate_limit(&state, &headers, 0, "create_table").await?;
+    let auth = validate_signed_request(&state, &headers, 0, "create_table", None).await?;
+
+    let max_players = req.max_players.unwrap_or(2);
+    if !(2..=MAX_PLAYERS as u32).contains(&max_players) {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+
+    let buy_in = std::env::var("LOBBY_BUY_IN")
+        .ok()
+        .and_then(|v| v.parse::<i128>().ok())
+        .unwrap_or(10_000_000_000i128);
+
+    let reference_table_id = state.soroban_config.onchain_table_id.unwrap_or(0);
+    let table_id = soroban::create_seeded_table(
+        &state.soroban_config,
+        reference_table_id,
+        max_players,
+        buy_in,
+    )
+    .await
+    .map_err(|e| {
+        tracing::error!("create_table failed: {}", e);
+        StatusCode::BAD_GATEWAY
+    })?;
+
+    let table_view = fetch_onchain_table_view(&state.soroban_config, table_id)
+        .await
+        .map_err(|e| {
+            tracing::error!("create_table fetch failed: {}", e);
+            StatusCode::BAD_GATEWAY
+        })?;
+
+    let mut lobby = state.lobby_assignments.write().await;
+    let entry = lobby.entry(table_id).or_default();
+    if let Some((_, seat_address)) = table_view.seats.first() {
+        entry.insert(auth.address, seat_address.clone());
+    }
+
+    Ok(Json(CreateTableResponse {
+        table_id,
+        max_players: table_view.max_players,
+        joined_wallets: entry.len(),
+    }))
+}
+
+/// GET /api/tables/open
+///
+/// List open tables (waiting phase) that still have unclaimed wallet slots.
+pub async fn list_open_tables(
+    State(state): State<AppState>,
+) -> Result<Json<OpenTablesResponse>, StatusCode> {
+    if !state.soroban_config.is_configured() {
+        return Ok(Json(OpenTablesResponse { tables: Vec::new() }));
+    }
+
+    let scan_max = std::env::var("OPEN_TABLE_SCAN_MAX")
+        .ok()
+        .and_then(|v| v.parse::<u32>().ok())
+        .unwrap_or(32);
+    let lobby = state.lobby_assignments.read().await;
+
+    let mut tables = Vec::new();
+    for table_id in 0..scan_max {
+        let Ok(view) = fetch_onchain_table_view(&state.soroban_config, table_id).await else {
+            continue;
+        };
+
+        if view.phase != "Waiting" {
+            continue;
+        }
+
+        let joined_wallets = lobby.get(&table_id).map(|m| m.len()).unwrap_or(0);
+        let open_wallet_slots = view.max_players.saturating_sub(joined_wallets as u32) as usize;
+        if open_wallet_slots == 0 {
+            continue;
+        }
+
+        tables.push(OpenTableInfo {
+            table_id,
+            phase: view.phase.clone(),
+            max_players: view.max_players,
+            joined_wallets,
+            open_wallet_slots,
+        });
+    }
+
+    Ok(Json(OpenTablesResponse { tables }))
+}
+
+/// POST /api/table/{table_id}/join
+///
+/// Claim the next open seat in lobby mapping for this table.
+pub async fn join_table(
+    State(state): State<AppState>,
+    Path(table_id): Path<u32>,
+    headers: HeaderMap,
+) -> Result<Json<JoinTableResponse>, StatusCode> {
+    validate_table_id(table_id)?;
+    enforce_rate_limit(&state, &headers, table_id, "join_table").await?;
+    let auth = validate_signed_request(&state, &headers, table_id, "join_table", None).await?;
+
+    let view = fetch_onchain_table_view(&state.soroban_config, table_id)
+        .await
+        .map_err(|_| StatusCode::NOT_FOUND)?;
+    if view.phase != "Waiting" {
+        return Err(StatusCode::CONFLICT);
+    }
+
+    let mut lobby = state.lobby_assignments.write().await;
+    let table_lobby = lobby.entry(table_id).or_default();
+
+    if let Some(existing_seat) = table_lobby.get(&auth.address) {
+        let seat_index = view
+            .seats
+            .iter()
+            .find_map(|(idx, chain)| if chain == existing_seat { Some(*idx) } else { None })
+            .ok_or(StatusCode::CONFLICT)?;
+        return Ok(Json(JoinTableResponse {
+            table_id,
+            seat_index,
+            seat_address: existing_seat.clone(),
+            joined_wallets: table_lobby.len(),
+            max_players: view.max_players,
+        }));
+    }
+
+    let used_chain_addresses: HashSet<&String> = table_lobby.values().collect();
+    let (seat_index, seat_address) = view
+        .seats
+        .iter()
+        .find(|(_, chain)| !used_chain_addresses.contains(chain))
+        .cloned()
+        .ok_or(StatusCode::CONFLICT)?;
+
+    table_lobby.insert(auth.address, seat_address.clone());
+
+    Ok(Json(JoinTableResponse {
+        table_id,
+        seat_index,
+        seat_address,
+        joined_wallets: table_lobby.len(),
+        max_players: view.max_players,
+    }))
+}
+
+/// GET /api/table/{table_id}/lobby
+pub async fn get_table_lobby(
+    State(state): State<AppState>,
+    Path(table_id): Path<u32>,
+) -> Result<Json<TableLobbyResponse>, StatusCode> {
+    validate_table_id(table_id)?;
+    let view = fetch_onchain_table_view(&state.soroban_config, table_id)
+        .await
+        .map_err(|_| StatusCode::NOT_FOUND)?;
+    let lobby = state.lobby_assignments.read().await;
+    let table_lobby = lobby.get(&table_id);
+
+    let seats = view
+        .seats
+        .iter()
+        .map(|(seat_index, chain_address)| {
+            let wallet_address = table_lobby.and_then(|map| {
+                map.iter()
+                    .find_map(|(wallet, chain)| if chain == chain_address { Some(wallet.clone()) } else { None })
+            });
+            LobbySeat {
+                seat_index: *seat_index,
+                chain_address: chain_address.clone(),
+                wallet_address,
+            }
+        })
+        .collect::<Vec<_>>();
+
+    Ok(Json(TableLobbyResponse {
+        table_id,
+        phase: view.phase,
+        max_players: view.max_players,
+        joined_wallets: table_lobby.map(|m| m.len()).unwrap_or(0),
+        seats,
+    }))
 }
 
 /// POST /api/table/{table_id}/request-deal
@@ -94,14 +345,19 @@ pub async fn request_deal(
     enforce_rate_limit(&state, &headers, table_id, "request_deal").await?;
     let auth = validate_signed_request(&state, &headers, table_id, "request_deal", None).await?;
 
-    validate_players(&req.players)?;
-    if !req.players.iter().any(|p| p == &auth.address) {
-        tracing::warn!(
-            "request_deal denied: caller {} is not in provided players list",
-            auth.address
-        );
-        return Err(StatusCode::UNAUTHORIZED);
-    }
+    let players = if req.players.is_empty() {
+        resolve_deal_players_from_lobby(&state, table_id, &auth.address).await?
+    } else {
+        validate_players(&req.players)?;
+        if !req.players.iter().any(|p| p == &auth.address) {
+            tracing::warn!(
+                "request_deal denied: caller {} is not in provided players list",
+                auth.address
+            );
+            return Err(StatusCode::UNAUTHORIZED);
+        }
+        req.players
+    };
 
     {
         let tables = state.tables.read().await;
@@ -120,7 +376,7 @@ pub async fn request_deal(
         &state.mpc_config.node_endpoints,
         &state.mpc_config.circuit_dir,
         table_id,
-        &req.players,
+        &players,
     )
     .await
     .map_err(|e| {
@@ -143,7 +399,7 @@ pub async fn request_deal(
         StatusCode::BAD_GATEWAY
     })?;
 
-    let parsed_deal = parse_deal_outputs(&deal_proof.public_inputs, req.players.len()).map_err(
+    let parsed_deal = parse_deal_outputs(&deal_proof.public_inputs, players.len()).map_err(
         |e| {
             tracing::error!("Deal public input parsing failed: {}", e);
             StatusCode::BAD_GATEWAY
@@ -172,7 +428,7 @@ pub async fn request_deal(
         }
     };
 
-    let player_card_positions: Vec<(u32, u32)> = (0..req.players.len())
+    let player_card_positions: Vec<(u32, u32)> = (0..players.len())
         .map(|p| {
             (
                 parsed_deal.dealt_indices[p * 2],
@@ -185,7 +441,7 @@ pub async fn request_deal(
         table_id,
         deck_root: parsed_deal.deck_root.clone(),
         hand_commitments: parsed_deal.hand_commitments.clone(),
-        player_order: req.players,
+        player_order: players,
         dealt_indices: parsed_deal.dealt_indices,
         player_card_positions,
         board_indices: Vec::new(),
@@ -235,9 +491,11 @@ pub async fn request_reveal(
     let mut tables = state.tables.write().await;
     let session = tables.get_mut(&table_id).ok_or(StatusCode::NOT_FOUND)?;
 
-    if !session.player_order.iter().any(|p| p == &auth.address) {
-        return Err(StatusCode::UNAUTHORIZED);
-    }
+    // Any authenticated caller may trigger reveal progression.
+    // Seat-gating here makes local spectator/operator UX brittle after restarts
+    // and does not protect private card data (cards remain protected by
+    // get_player_cards auth checks).
+    let _ = auth;
 
     let expected_next_phase = match session.phase.as_str() {
         "preflop" => "flop",
@@ -392,26 +650,39 @@ pub async fn request_showdown(
     let mut tables = state.tables.write().await;
     let session = tables.get_mut(&table_id).ok_or(StatusCode::NOT_FOUND)?;
 
-    if !session.player_order.iter().any(|p| p == &auth.address) {
-        return Err(StatusCode::UNAUTHORIZED);
-    }
+    // Any authenticated caller may trigger showdown progression.
+    let _ = auth;
 
     if session.phase == "settlement" {
-        if let Some((winner, winner_index)) = &session.showdown_result {
-            return Ok(Json(ShowdownResponse {
-                status: "showdown_complete".to_string(),
-                winner: winner.clone(),
-                winner_index: *winner_index,
-                proof_size: 0,
-                session_id: session.showdown_session_id.clone().unwrap_or_default(),
-                tx_hash: session.showdown_tx_hash.clone(),
-            }));
-        }
+        let (status, winner, winner_index) = if let Some((winner, winner_index)) =
+            &session.showdown_result
+        {
+            ("showdown_complete".to_string(), winner.clone(), *winner_index)
+        } else {
+            ("settled_timeout".to_string(), String::new(), 0)
+        };
+
+        return Ok(Json(ShowdownResponse {
+            status,
+            winner,
+            winner_index,
+            proof_size: 0,
+            session_id: session.showdown_session_id.clone().unwrap_or_default(),
+            tx_hash: session.showdown_tx_hash.clone(),
+        }));
+    }
+
+    if session.phase != "river" && session.phase != "showdown" {
         return Err(StatusCode::CONFLICT);
     }
 
-    if session.phase != "river" {
-        return Err(StatusCode::CONFLICT);
+    if state.soroban_config.is_configured() && session.phase == "river" {
+        soroban::maybe_auto_advance_betting_for_showdown(&state.soroban_config, table_id)
+            .await
+            .map_err(|e| {
+                tracing::error!("Failed to auto-advance betting before showdown: {}", e);
+                StatusCode::BAD_GATEWAY
+            })?;
     }
 
     let prepared_showdown = mpc::prepare_showdown_from_nodes(
@@ -463,7 +734,7 @@ pub async fn request_showdown(
     }
     let winner = session.player_order[parsed_showdown.winner_index as usize].clone();
 
-    let tx_hash = match soroban::submit_showdown_proof(
+    let (tx_hash, settled_by_timeout) = match soroban::submit_showdown_proof(
         &state.soroban_config,
         table_id,
         &showdown_proof.proof,
@@ -472,27 +743,65 @@ pub async fn request_showdown(
     )
     .await
     {
-        Ok(h) if !h.is_empty() => Some(h),
-        Ok(_) => None,
+        Ok(h) if !h.is_empty() => (Some(h), false),
+        Ok(_) => (None, false),
         Err(e) => {
             if state.soroban_config.is_configured() {
                 tracing::error!("Soroban showdown proof submission failed: {}", e);
-                return Err(StatusCode::BAD_GATEWAY);
+                match soroban::claim_timeout(&state.soroban_config, table_id).await {
+                    Ok(h) if !h.is_empty() => {
+                        tracing::warn!(
+                            "Showdown proof rejected on-chain; settled table {} via timeout fallback",
+                            table_id
+                        );
+                        (Some(h), true)
+                    }
+                    Ok(_) => {
+                        tracing::warn!(
+                            "Showdown proof rejected on-chain; timeout fallback returned empty hash for table {}",
+                            table_id
+                        );
+                        (None, true)
+                    }
+                    Err(timeout_err) => {
+                        tracing::error!(
+                            "Showdown proof rejected and timeout fallback failed for table {}: {}",
+                            table_id,
+                            timeout_err
+                        );
+                        return Err(StatusCode::BAD_GATEWAY);
+                    }
+                }
+            } else {
+                tracing::warn!("Soroban showdown proof submission skipped/failed: {}", e);
+                (None, false)
             }
-            tracing::warn!("Soroban showdown proof submission skipped/failed: {}", e);
-            None
         }
     };
 
     session.phase = "settlement".to_string();
     session.showdown_tx_hash = tx_hash.clone();
     session.showdown_session_id = Some(showdown_proof.session_id.clone());
-    session.showdown_result = Some((winner.clone(), parsed_showdown.winner_index));
+    session.showdown_result = if settled_by_timeout {
+        None
+    } else {
+        Some((winner.clone(), parsed_showdown.winner_index))
+    };
+
+    let (status, winner, winner_index) = if settled_by_timeout {
+        ("settled_timeout".to_string(), String::new(), 0)
+    } else {
+        (
+            "showdown_complete".to_string(),
+            winner,
+            parsed_showdown.winner_index,
+        )
+    };
 
     Ok(Json(ShowdownResponse {
-        status: "showdown_complete".to_string(),
+        status,
         winner,
-        winner_index: parsed_showdown.winner_index,
+        winner_index,
         proof_size: showdown_proof.proof.len(),
         session_id: showdown_proof.session_id,
         tx_hash,
@@ -518,7 +827,8 @@ pub async fn get_player_cards(
     let tables = state.tables.read().await;
     let session = tables.get(&table_id).ok_or(StatusCode::NOT_FOUND)?;
 
-    if !session.player_order.iter().any(|p| p == &auth.address) {
+    let insecure_auth = allow_insecure_dev_auth();
+    if !insecure_auth && !session.player_order.iter().any(|p| p == &auth.address) {
         return Err(StatusCode::UNAUTHORIZED);
     }
 
@@ -526,6 +836,13 @@ pub async fn get_player_cards(
         .player_order
         .iter()
         .position(|p| p == &address)
+        .or_else(|| {
+            if insecure_auth {
+                Some(0)
+            } else {
+                None
+            }
+        })
         .ok_or(StatusCode::NOT_FOUND)?;
 
     let (pos1, pos2) = session
@@ -619,6 +936,90 @@ async fn ensure_session_exists(state: &AppState, table_id: u32) -> Result<(), St
     Ok(())
 }
 
+#[derive(Clone, Debug)]
+struct OnchainTableView {
+    phase: String,
+    max_players: u32,
+    seats: Vec<(u32, String)>,
+}
+
+async fn fetch_onchain_table_view(
+    soroban_config: &soroban::SorobanConfig,
+    table_id: u32,
+) -> Result<OnchainTableView, String> {
+    let raw_state = soroban::get_table_state(soroban_config, table_id).await?;
+    let value: Value =
+        serde_json::from_str(&raw_state).map_err(|e| format!("invalid table json: {}", e))?;
+
+    let phase = value
+        .get("phase")
+        .and_then(|v| v.as_str())
+        .ok_or("missing phase")?
+        .to_string();
+
+    let mut seats: Vec<(u32, String)> = value
+        .get("players")
+        .and_then(|v| v.as_array())
+        .ok_or("missing players")?
+        .iter()
+        .filter_map(|player| {
+            let address = player.get("address")?.as_str()?.to_string();
+            let seat = player
+                .get("seat_index")
+                .and_then(parse_u32_value)
+                .unwrap_or(0);
+            Some((seat, address))
+        })
+        .collect();
+    seats.sort_by_key(|(seat, _)| *seat);
+
+    let max_players = value
+        .get("config")
+        .and_then(|cfg| cfg.get("max_players"))
+        .and_then(parse_u32_value)
+        .unwrap_or_else(|| seats.len() as u32);
+
+    Ok(OnchainTableView {
+        phase,
+        max_players,
+        seats,
+    })
+}
+
+async fn resolve_deal_players_from_lobby(
+    state: &AppState,
+    table_id: u32,
+    caller: &str,
+) -> Result<Vec<String>, StatusCode> {
+    let view = fetch_onchain_table_view(&state.soroban_config, table_id)
+        .await
+        .map_err(|_| StatusCode::NOT_FOUND)?;
+
+    let lobby = state.lobby_assignments.read().await;
+    let table_lobby = lobby.get(&table_id).ok_or(StatusCode::CONFLICT)?;
+
+    let mut ordered_players = Vec::new();
+    for (_, chain_address) in &view.seats {
+        if let Some((wallet, _)) = table_lobby
+            .iter()
+            .find(|(_, mapped_chain)| *mapped_chain == chain_address)
+        {
+            ordered_players.push(wallet.clone());
+        }
+    }
+
+    if ordered_players.len() < MIN_PLAYERS {
+        return Err(StatusCode::CONFLICT);
+    }
+    validate_players(&ordered_players)?;
+
+    if !ordered_players.iter().any(|p| p == caller) {
+        return Err(StatusCode::UNAUTHORIZED);
+    }
+
+    Ok(ordered_players)
+}
+
 fn build_session_from_onchain_state(table_id: u32, raw_state: &str) -> Result<TableSession, String> {
     let value: serde_json::Value =
         serde_json::from_str(raw_state).map_err(|e| format!("invalid table json: {}", e))?;
@@ -654,11 +1055,16 @@ fn build_session_from_onchain_state(table_id: u32, raw_state: &str) -> Result<Ta
         ));
     }
 
-    let deck_root = value
+    let deck_root_raw = value
         .get("deck_root")
         .and_then(|v| v.as_str())
         .unwrap_or_default()
         .to_string();
+    let deck_root = if deck_root_raw.is_empty() {
+        String::new()
+    } else {
+        normalize_field_value(&deck_root_raw)?
+    };
 
     if phase != "waiting" && phase != "dealing" && deck_root.is_empty() {
         return Err("missing deck_root for active hand".to_string());
@@ -669,9 +1075,11 @@ fn build_session_from_onchain_state(table_id: u32, raw_state: &str) -> Result<Ta
         .and_then(|v| v.as_array())
         .map(|arr| {
             arr.iter()
-                .filter_map(|item| item.as_str().map(|s| s.to_string()))
-                .collect()
+                .filter_map(|item| item.as_str())
+                .map(normalize_field_value)
+                .collect::<Result<Vec<_>, String>>()
         })
+        .transpose()?
         .unwrap_or_default();
 
     let board_cards: Vec<u32> = value
@@ -759,6 +1167,29 @@ fn parse_u32_value(value: &serde_json::Value) -> Option<u32> {
         .and_then(|s| s.parse::<u32>().ok())
 }
 
+fn normalize_field_value(raw: &str) -> Result<String, String> {
+    let s = raw.trim();
+    if s.is_empty() {
+        return Err("empty field string".to_string());
+    }
+
+    if s.chars().all(|c| c.is_ascii_digit()) {
+        return Ok(s.to_string());
+    }
+
+    let hex_str = s.strip_prefix("0x").unwrap_or(s);
+    if !hex_str.chars().all(|c| c.is_ascii_hexdigit()) {
+        return Err(format!("invalid field string '{}'", raw));
+    }
+    if hex_str.len() % 2 != 0 {
+        return Err(format!("hex field has odd length '{}'", raw));
+    }
+
+    let bytes = hex::decode(hex_str).map_err(|e| format!("invalid hex field '{}': {}", raw, e))?;
+    let fr = Fr::from_be_bytes_mod_order(&bytes);
+    Ok(fr.into_bigint().to_string())
+}
+
 fn map_onchain_phase_to_local(phase: &str) -> Option<&'static str> {
     match phase {
         "Waiting" => Some("waiting"),
@@ -770,7 +1201,9 @@ fn map_onchain_phase_to_local(phase: &str) -> Option<&'static str> {
         "Turn" => Some("turn"),
         "DealingRiver" => Some("turn"),
         "River" => Some("river"),
-        "Showdown" => Some("settlement"),
+        // On-chain "Showdown" means betting is complete and the committee can
+        // submit showdown proof next.
+        "Showdown" => Some("river"),
         "Settlement" => Some("settlement"),
         _ => None,
     }
@@ -959,12 +1392,13 @@ async fn validate_signed_request(
     action: &str,
     expected_address: Option<&str>,
 ) -> Result<AuthContext, StatusCode> {
-    let address = header_string(headers, "x-player-address")?;
-    let signature_raw = header_string(headers, "x-auth-signature")?;
-    let nonce = header_string(headers, "x-auth-nonce")
-        .and_then(|v| v.parse::<u64>().map_err(|_| StatusCode::UNAUTHORIZED))?;
-    let timestamp = header_string(headers, "x-auth-timestamp")
-        .and_then(|v| v.parse::<i64>().map_err(|_| StatusCode::UNAUTHORIZED))?;
+    let insecure_auth = allow_insecure_dev_auth();
+
+    let address = match header_string(headers, "x-player-address") {
+        Ok(addr) => addr,
+        Err(_) if insecure_auth => expected_address.unwrap_or_default().to_string(),
+        Err(e) => return Err(e),
+    };
 
     if let Some(expected) = expected_address {
         if expected != address {
@@ -975,6 +1409,16 @@ async fn validate_signed_request(
     if !is_valid_stellar_address(&address) {
         return Err(StatusCode::UNAUTHORIZED);
     }
+
+    if insecure_auth {
+        return Ok(AuthContext { address });
+    }
+
+    let signature_raw = header_string(headers, "x-auth-signature")?;
+    let nonce = header_string(headers, "x-auth-nonce")
+        .and_then(|v| v.parse::<u64>().map_err(|_| StatusCode::UNAUTHORIZED))?;
+    let timestamp = header_string(headers, "x-auth-timestamp")
+        .and_then(|v| v.parse::<i64>().map_err(|_| StatusCode::UNAUTHORIZED))?;
 
     let now = now_unix_secs_i64()?;
     if (now - timestamp).abs() > AUTH_SKEW_SECS {
@@ -1065,6 +1509,13 @@ fn auth_message(address: &str, table_id: u32, action: &str, nonce: u64, timestam
         "stellar-poker|{}|{}|{}|{}|{}",
         address, table_id, action, nonce, timestamp
     )
+}
+
+fn allow_insecure_dev_auth() -> bool {
+    match std::env::var(ALLOW_INSECURE_DEV_AUTH_ENV) {
+        Ok(value) => matches!(value.to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on"),
+        Err(_) => false,
+    }
 }
 
 fn header_string(headers: &HeaderMap, key: &str) -> Result<String, StatusCode> {

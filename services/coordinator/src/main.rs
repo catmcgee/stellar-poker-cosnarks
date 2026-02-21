@@ -29,6 +29,7 @@ mod soroban;
 #[derive(Clone)]
 struct AppState {
     tables: Arc<RwLock<HashMap<u32, TableSession>>>,
+    lobby_assignments: Arc<RwLock<HashMap<u32, HashMap<String, String>>>>,
     mpc_config: MpcConfig,
     soroban_config: soroban::SorobanConfig,
     auth_state: Arc<RwLock<AuthState>>,
@@ -125,6 +126,7 @@ async fn main() {
 
     let state = AppState {
         tables: Arc::new(RwLock::new(HashMap::new())),
+        lobby_assignments: Arc::new(RwLock::new(HashMap::new())),
         mpc_config,
         soroban_config,
         auth_state: Arc::new(RwLock::new(AuthState::default())),
@@ -133,6 +135,10 @@ async fn main() {
 
     let app = Router::new()
         .route("/api/health", get(health))
+        .route("/api/tables/create", post(api::create_table))
+        .route("/api/tables/open", get(api::list_open_tables))
+        .route("/api/table/:table_id/join", post(api::join_table))
+        .route("/api/table/:table_id/lobby", get(api::get_table_lobby))
         .route(
             "/api/table/:table_id/request-deal",
             post(api::request_deal),

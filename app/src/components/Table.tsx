@@ -1,13 +1,14 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import Link from "next/link";
 import { Board } from "./Board";
 import { Card } from "./Card";
 import { PlayerSeat } from "./PlayerSeat";
 import { ActionPanel } from "./ActionPanel";
 import { PixelWorld } from "./PixelWorld";
-import { PixelCat, PixelHeart } from "./PixelCat";
+import { PixelCat } from "./PixelCat";
+import { PixelChip } from "./PixelChip";
 import type { GameState, GamePhase } from "@/lib/game-state";
 import { createInitialState } from "@/lib/game-state";
 import * as api from "@/lib/api";
@@ -18,6 +19,7 @@ interface TableProps {
 }
 
 type ActiveRequest = "deal" | "flop" | "turn" | "river" | "showdown" | null;
+type PlayMode = "single" | "headsup" | "multi";
 
 function isStellarAddress(address: string): boolean {
   return /^G[A-Z2-7]{55}$/.test(address.trim());
@@ -75,18 +77,32 @@ export function Table({ tableId }: TableProps) {
   const [game, setGame] = useState<GameState>(() => createInitialState(tableId));
   const [wallet, setWallet] = useState<WalletSession | null>(null);
   const [opponentAddress, setOpponentAddress] = useState("");
+  const [multiOpponents, setMultiOpponents] = useState<string[]>(["", ""]);
+  const [playMode, setPlayMode] = useState<PlayMode>("single");
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [connectingWallet, setConnectingWallet] = useState(false);
   const [activeRequest, setActiveRequest] = useState<ActiveRequest>(null);
   const [onChainPhase, setOnChainPhase] = useState<string>("unknown");
   const [winnerAddress, setWinnerAddress] = useState<string | null>(null);
+  const [botLine, setBotLine] = useState<string | null>(null);
+  const botTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const botStepRef = useRef<string>("");
+  const botRetriesRef = useRef<Record<string, number>>({});
 
   const userAddress = wallet?.address;
   const userPlayer = userAddress
     ? game.players.find((p) => p.address === userAddress)
     : undefined;
   const isMyTurn = !!userAddress && game.players[game.currentTurn]?.address === userAddress;
+  const isWalletSeated = !!wallet && !!userPlayer;
+  const seatedAddresses = game.players
+    .filter((p) => isStellarAddress(p.address))
+    .map((p) => p.address);
+  const tableSeatLabel =
+    seatedAddresses.length > 0
+      ? seatedAddresses.map(shortAddress).join(" vs ")
+      : "NO SEATS YET";
 
   const syncOnChainState = useCallback(async () => {
     try {
@@ -110,14 +126,34 @@ export function Table({ tableId }: TableProps) {
         : null;
 
       setGame((prev) => {
+        const rawHasWallet =
+          !!userAddress &&
+          !!rawPlayers?.some((raw) => typeof raw.address === "string" && raw.address === userAddress);
+        const prevHasWallet = !!userAddress && prev.players.some((p) => p.address === userAddress);
+        const aliasWalletSeatForLocalDev =
+          !!userAddress && !!rawPlayers && rawPlayers.length > 0 && !rawHasWallet && phaseRaw !== "Waiting";
+        const preserveLocalSeatAddresses =
+          !!userAddress &&
+          prevHasWallet &&
+          !!rawPlayers &&
+          rawPlayers.length === prev.players.length &&
+          !rawHasWallet &&
+          prev.phase !== "waiting";
+
         const mergedPlayers =
           rawPlayers && rawPlayers.length > 0
             ? rawPlayers.map((raw, index) => {
-                const address =
+                const chainAddress =
                   typeof raw.address === "string"
                     ? raw.address
                     : prev.players[index]?.address ?? `seat-${index}`;
-                const existing = prev.players.find((p) => p.address === address);
+                const address = preserveLocalSeatAddresses
+                  ? prev.players[index]?.address ?? chainAddress
+                  : aliasWalletSeatForLocalDev && index === 0
+                    ? userAddress
+                  : chainAddress;
+                const existing =
+                  prev.players.find((p) => p.address === address) ?? prev.players[index];
                 return {
                   address,
                   seat: toNumber(raw.seat_index, existing?.seat ?? index),
@@ -144,7 +180,7 @@ export function Table({ tableId }: TableProps) {
     } catch {
       // Non-fatal; UI still works off latest known state.
     }
-  }, [tableId]);
+  }, [tableId, userAddress]);
 
   const hydrateMyCards = useCallback(
     async (auth: WalletSession) => {
@@ -185,13 +221,25 @@ export function Table({ tableId }: TableProps) {
           setOpponentAddress(existingOpponent.address);
         }
       }
+      if (multiOpponents.every((entry) => !entry.trim()) && game.players.length >= 2) {
+        const known = game.players
+          .filter((p) => p.address !== connected.address)
+          .map((p) => p.address)
+          .slice(0, 5);
+        if (known.length > 0) {
+          while (known.length < 2) {
+            known.push("");
+          }
+          setMultiOpponents(known);
+        }
+      }
       await hydrateMyCards(connected);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to connect wallet");
     } finally {
       setConnectingWallet(false);
     }
-  }, [game.players, hydrateMyCards, opponentAddress]);
+  }, [game.players, hydrateMyCards, multiOpponents, opponentAddress]);
 
   const resolvePlayersForDeal = useCallback((): string[] | null => {
     if (!wallet) {
@@ -199,24 +247,75 @@ export function Table({ tableId }: TableProps) {
       return null;
     }
 
-    const existingOpponent = game.players.find((p) => p.address !== wallet.address)?.address;
-    const opponent = (existingOpponent ?? opponentAddress).trim();
-
     if (!isStellarAddress(wallet.address)) {
       setError("Connected wallet address is invalid");
       return null;
     }
-    if (!isStellarAddress(opponent)) {
-      setError("Enter a valid opponent Stellar address");
+
+    const existingOpponents = game.players
+      .filter((p) => p.address !== wallet.address)
+      .map((p) => p.address);
+    if (playMode === "single") {
+      const opponent = (
+        existingOpponents[0] ??
+        opponentAddress ??
+        process.env.NEXT_PUBLIC_SINGLE_PLAYER_OPPONENT ??
+        ""
+      ).trim();
+      if (!isStellarAddress(opponent)) {
+        setError("Solo mode could not find a valid local opponent seat");
+        return null;
+      }
+      if (opponent === wallet.address) {
+        setError("Opponent seat cannot match your wallet");
+        return null;
+      }
+      return [wallet.address, opponent];
+    }
+
+    if (playMode === "headsup") {
+      const opponent = (existingOpponents[0] ?? opponentAddress).trim();
+      if (!isStellarAddress(opponent)) {
+        setError("Enter a valid opponent Stellar address");
+        return null;
+      }
+      if (opponent === wallet.address) {
+        setError("Opponent address must be different from your wallet");
+        return null;
+      }
+      return [wallet.address, opponent];
+    }
+
+    const submittedOpponents = multiOpponents
+      .map((address) => address.trim())
+      .filter((address) => address.length > 0);
+    const opponents = submittedOpponents.length > 0 ? submittedOpponents : existingOpponents;
+
+    if (opponents.length < 2) {
+      setError("Multi-player mode needs at least 2 opponents (3 total players)");
       return null;
     }
-    if (opponent === wallet.address) {
-      setError("Opponent address must be different from your wallet");
+    if (opponents.length > 5) {
+      setError("Multi-player mode supports up to 6 total players");
       return null;
     }
 
-    return [wallet.address, opponent];
-  }, [wallet, game.players, opponentAddress]);
+    const players = [wallet.address, ...opponents];
+    for (const address of players) {
+      if (!isStellarAddress(address)) {
+        setError(`Invalid Stellar address in player list: ${address}`);
+        return null;
+      }
+    }
+
+    const unique = new Set(players);
+    if (unique.size !== players.length) {
+      setError("Duplicate player addresses are not allowed");
+      return null;
+    }
+
+    return players;
+  }, [wallet, game.players, opponentAddress, playMode, multiOpponents]);
 
   const handleDeal = useCallback(
     async (players: string[]) => {
@@ -264,22 +363,6 @@ export function Table({ tableId }: TableProps) {
     [hydrateMyCards, syncOnChainState, tableId, wallet]
   );
 
-  const handleAction = useCallback(
-    async (action: string) => {
-      if (action !== "start") {
-        setError("Use the DEAL/REVEAL/SHOWDOWN controls on the table.");
-        return;
-      }
-
-      const players = resolvePlayersForDeal();
-      if (!players) {
-        return;
-      }
-      await handleDeal(players);
-    },
-    [resolvePlayersForDeal, handleDeal]
-  );
-
   const handleReveal = useCallback(
     async (phase: "flop" | "turn" | "river") => {
       if (!wallet) {
@@ -304,12 +387,15 @@ export function Table({ tableId }: TableProps) {
         await syncOnChainState();
       } catch (e) {
         setError(e instanceof Error ? e.message : "Reveal failed");
+        if (playMode === "single") {
+          botStepRef.current = "";
+        }
       } finally {
         setLoading(false);
         setActiveRequest(null);
       }
     },
-    [syncOnChainState, tableId, wallet]
+    [playMode, syncOnChainState, tableId, wallet]
   );
 
   const handleShowdown = useCallback(async () => {
@@ -335,13 +421,131 @@ export function Table({ tableId }: TableProps) {
       await syncOnChainState();
     } catch (e) {
       setError(e instanceof Error ? e.message : "Showdown failed");
+      if (playMode === "single") {
+        botStepRef.current = "";
+      }
     } finally {
       setLoading(false);
       setActiveRequest(null);
     }
-  }, [syncOnChainState, tableId, wallet]);
+  }, [playMode, syncOnChainState, tableId, wallet]);
+
+  const handleAction = useCallback(
+    async (action: string) => {
+      if (action === "showdown") {
+        if (!wallet) {
+          setError("Connect Freighter wallet before requesting showdown");
+          return;
+        }
+        await handleShowdown();
+        return;
+      }
+
+      const bettingActions = ["fold", "check", "call", "bet", "raise", "allin"];
+      if (bettingActions.includes(action)) {
+        if (playMode === "single") {
+          console.log(`[single-player] betting action: ${action} (auto-handled by coordinator)`);
+          return;
+        }
+        setError("Multiplayer betting actions are not yet wired to the API.");
+        return;
+      }
+
+      if (action !== "start") {
+        setError("Use the DEAL/REVEAL/SHOWDOWN controls on the table.");
+        return;
+      }
+
+      const players = resolvePlayersForDeal();
+      if (!players) {
+        return;
+      }
+      await handleDeal(players);
+    },
+    [wallet, resolvePlayersForDeal, handleDeal, handleShowdown]
+  );
 
   const currentBet = Math.max(...game.players.map((p) => p.betThisRound), 0);
+  const canStartHand = !!wallet;
+  const seatStatusHint =
+    wallet && !isWalletSeated && seatedAddresses.length > 0
+      ? "Connected wallet is not in on-chain seats. You can still click DEAL to run a hand with this wallet."
+      : null;
+
+  useEffect(() => {
+    return () => {
+      if (botTimerRef.current) {
+        clearTimeout(botTimerRef.current);
+      }
+    };
+  }, []);
+
+  useEffect(() => {
+    if (playMode !== "single" || !wallet || loading) {
+      return;
+    }
+
+    const stepKey = `${game.handNumber}:${game.phase}`;
+    let line: string | null = null;
+    let action: (() => Promise<void>) | null = null;
+
+    switch (game.phase) {
+      case "preflop":
+        line = "Bot checks. Dealing flop...";
+        action = async () => handleReveal("flop");
+        break;
+      case "flop":
+        line = "Bot checks again. Dealing turn...";
+        action = async () => handleReveal("turn");
+        break;
+      case "turn":
+        line = "Bot checks again. Dealing river...";
+        action = async () => handleReveal("river");
+        break;
+      case "river":
+        line = "Bot always calls/checks. Going to showdown...";
+        action = handleShowdown;
+        break;
+      case "showdown":
+        line = "Bot tabled hand. Verifying showdown...";
+        action = null;
+        break;
+      case "settlement":
+      case "waiting":
+        botStepRef.current = "";
+        botRetriesRef.current = {};
+        setBotLine(null);
+        return;
+      default:
+        return;
+    }
+
+    setBotLine(line);
+    if (!action) {
+      return;
+    }
+
+    if (botStepRef.current === stepKey) {
+      return;
+    }
+
+    const tries = botRetriesRef.current[stepKey] ?? 0;
+    if (tries >= 2) {
+      setBotLine("Bot paused after retries. Use the phase button once to continue.");
+      return;
+    }
+
+    botStepRef.current = stepKey;
+    botRetriesRef.current[stepKey] = tries + 1;
+
+    if (botTimerRef.current) {
+      clearTimeout(botTimerRef.current);
+    }
+
+    botTimerRef.current = setTimeout(() => {
+      void action();
+    }, 900);
+  }, [game.handNumber, game.phase, handleReveal, handleShowdown, loading, playMode, wallet]);
 
   const dealerLine = (() => {
     if (loading) {
@@ -361,9 +565,23 @@ export function Table({ tableId }: TableProps) {
       }
     }
 
+    if (playMode === "single" && botLine && game.phase !== "waiting") {
+      return `Dealer: ${botLine}`;
+    }
+
+    if (wallet && !isWalletSeated && seatedAddresses.length > 0) {
+      return `Dealer: On-chain seats are ${tableSeatLabel}. Click DEAL CARDS to run a hand with your connected wallet.`;
+    }
+
     switch (game.phase) {
       case "waiting":
-        return "Dealer: Connect wallet, seat your opponent, then click DEAL CARDS.";
+        if (playMode === "single") {
+          return "Dealer: Solo mode. Opponent seat is automatic, click DEAL CARDS.";
+        }
+        if (playMode === "headsup") {
+          return "Dealer: Two-player mode. Enter opponent wallet, then click DEAL CARDS.";
+        }
+        return "Dealer: Multi-player mode. Enter 3-6 total player wallets, then click DEAL CARDS.";
       case "dealing":
         return "Dealer: Cards are being dealt.";
       case "preflop":
@@ -385,8 +603,27 @@ export function Table({ tableId }: TableProps) {
     }
   })();
 
+  const setMultiOpponentAt = (index: number, value: string) => {
+    setMultiOpponents((prev) => {
+      const next = [...prev];
+      next[index] = value;
+      return next;
+    });
+  };
+
+  const addMultiOpponentField = () => {
+    setMultiOpponents((prev) => (prev.length >= 5 ? prev : [...prev, ""]));
+  };
+
+  const removeMultiOpponentField = (index: number) => {
+    setMultiOpponents((prev) => {
+      if (prev.length <= 2) return prev;
+      return prev.filter((_, i) => i !== index);
+    });
+  };
+
   return (
-    <PixelWorld>
+    <PixelWorld autoNight>
       <div className="min-h-screen flex flex-col items-center gap-4 p-4 pt-6 relative z-[10]">
         {/* Header bar */}
         <div className="w-full max-w-3xl flex items-center justify-between">
@@ -403,7 +640,7 @@ export function Table({ tableId }: TableProps) {
             >
               ←
             </Link>
-            <PixelHeart size={3} beating />
+            <PixelChip color="red" size={3} />
             <h1
               className="text-[10px]"
               style={{
@@ -457,17 +694,112 @@ export function Table({ tableId }: TableProps) {
           </div>
         </div>
 
-        {/* Opponent address input */}
+        {/* Mode + opponent controls */}
         {game.phase === "waiting" && (
-          <div className="w-full max-w-3xl flex items-center gap-2">
-            <input
-              type="text"
-              value={opponentAddress}
-              onChange={(e) => setOpponentAddress(e.target.value.trim())}
-              placeholder="OPPONENT ADDRESS (G...)"
-              className="flex-1 text-[7px]"
-              style={{ padding: "6px 10px" }}
-            />
+          <div className="w-full max-w-3xl flex flex-col gap-2">
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => setPlayMode("single")}
+                className="pixel-btn text-[7px]"
+                style={{
+                  padding: "4px 10px",
+                  opacity: playMode === "single" ? 1 : 0.7,
+                  background: playMode === "single" ? "#145a32" : "#2c3e50",
+                }}
+              >
+                1 PLAYER
+              </button>
+              <button
+                type="button"
+                onClick={() => setPlayMode("headsup")}
+                className="pixel-btn text-[7px]"
+                style={{
+                  padding: "4px 10px",
+                  opacity: playMode === "headsup" ? 1 : 0.7,
+                  background: playMode === "headsup" ? "#7d6608" : "#2c3e50",
+                }}
+              >
+                2 PLAYER
+              </button>
+              <button
+                type="button"
+                onClick={() => setPlayMode("multi")}
+                className="pixel-btn text-[7px]"
+                style={{
+                  padding: "4px 10px",
+                  opacity: playMode === "multi" ? 1 : 0.7,
+                  background: playMode === "multi" ? "#1f618d" : "#2c3e50",
+                }}
+              >
+                3-6 PLAYERS
+              </button>
+            </div>
+
+            {playMode === "headsup" ? (
+              <input
+                type="text"
+                value={opponentAddress}
+                onChange={(e) => setOpponentAddress(e.target.value.trim())}
+                placeholder="OPPONENT ADDRESS (G...)"
+                className="flex-1 text-[7px]"
+                style={{ padding: "6px 10px" }}
+              />
+            ) : playMode === "multi" ? (
+              <div className="flex flex-col gap-2">
+                {multiOpponents.map((address, index) => (
+                  <div key={`multi-seat-${index}`} className="flex items-center gap-2">
+                    <input
+                      type="text"
+                      value={address}
+                      onChange={(e) => setMultiOpponentAt(index, e.target.value.trim())}
+                      placeholder={`PLAYER ${index + 2} ADDRESS (G...)`}
+                      className="flex-1 text-[7px]"
+                      style={{ padding: "6px 10px" }}
+                    />
+                    {multiOpponents.length > 2 && (
+                      <button
+                        type="button"
+                        onClick={() => removeMultiOpponentField(index)}
+                        className="pixel-btn text-[7px]"
+                        style={{ padding: "4px 8px", background: "#7b241c" }}
+                      >
+                        -
+                      </button>
+                    )}
+                  </div>
+                ))}
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={addMultiOpponentField}
+                    disabled={multiOpponents.length >= 5}
+                    className="pixel-btn text-[7px]"
+                    style={{
+                      padding: "4px 10px",
+                      opacity: multiOpponents.length >= 5 ? 0.6 : 1,
+                      background: "#1f618d",
+                    }}
+                  >
+                    + ADD PLAYER
+                  </button>
+                  <span className="text-[7px]" style={{ color: "#c8e6ff" }}>
+                    TOTAL PLAYERS: {1 + multiOpponents.filter((a) => a.trim().length > 0).length} / 6
+                  </span>
+                </div>
+              </div>
+            ) : (
+              <div
+                className="pixel-border-thin px-3 py-2 text-[7px]"
+                style={{
+                  color: "#c8e6ff",
+                  background: "rgba(10, 20, 30, 0.55)",
+                  borderColor: "rgba(140, 170, 200, 0.45)",
+                }}
+              >
+                SOLO MODE: Opponent seat auto-selected from table seats.
+              </div>
+            )}
           </div>
         )}
 
@@ -481,6 +813,23 @@ export function Table({ tableId }: TableProps) {
         >
           <span className="text-[7px]" style={{ color: "#f5e6c8" }}>
             {dealerLine}
+          </span>
+        </div>
+
+        <div
+          className="w-full max-w-3xl pixel-border-thin px-4 py-2"
+          style={{
+            background: "rgba(10, 20, 30, 0.55)",
+            borderColor: "rgba(140, 170, 200, 0.45)",
+          }}
+        >
+          <span className="text-[7px]" style={{ color: "#c8e6ff" }}>
+            TABLE SEATS: {tableSeatLabel}
+            {wallet
+              ? isWalletSeated
+                ? ` | YOU: ${shortAddress(wallet.address)}`
+                : ` | CONNECTED: ${shortAddress(wallet.address)} (NOT SEATED)`
+              : ""}
           </span>
         </div>
 
@@ -521,7 +870,7 @@ export function Table({ tableId }: TableProps) {
             />
 
             {/* ── OPPONENTS (top) ── */}
-            <div className="flex gap-8 items-end">
+            <div className="flex flex-wrap gap-6 items-end justify-center">
               {game.players
                 .filter((p) => !userAddress || p.address !== userAddress)
                 .map((player) => (
@@ -569,9 +918,9 @@ export function Table({ tableId }: TableProps) {
                 {game.phase === "preflop" && (
                   <button
                     onClick={() => handleReveal("flop")}
-                    disabled={loading}
+                    disabled={loading || !wallet}
                     className="pixel-btn pixel-btn-dark text-[7px]"
-                    style={{ padding: "4px 12px", opacity: loading ? 0.7 : 1 }}
+                    style={{ padding: "4px 12px", opacity: loading || !wallet ? 0.7 : 1 }}
                   >
                     DEAL FLOP
                   </button>
@@ -579,9 +928,9 @@ export function Table({ tableId }: TableProps) {
                 {game.phase === "flop" && (
                   <button
                     onClick={() => handleReveal("turn")}
-                    disabled={loading}
+                    disabled={loading || !wallet}
                     className="pixel-btn pixel-btn-dark text-[7px]"
-                    style={{ padding: "4px 12px", opacity: loading ? 0.7 : 1 }}
+                    style={{ padding: "4px 12px", opacity: loading || !wallet ? 0.7 : 1 }}
                   >
                     DEAL TURN
                   </button>
@@ -589,21 +938,21 @@ export function Table({ tableId }: TableProps) {
                 {game.phase === "turn" && (
                   <button
                     onClick={() => handleReveal("river")}
-                    disabled={loading}
+                    disabled={loading || !wallet}
                     className="pixel-btn pixel-btn-dark text-[7px]"
-                    style={{ padding: "4px 12px", opacity: loading ? 0.7 : 1 }}
+                    style={{ padding: "4px 12px", opacity: loading || !wallet ? 0.7 : 1 }}
                   >
                     DEAL RIVER
                   </button>
                 )}
-                {game.phase === "river" && (
+                {(game.phase === "river" || game.phase === "showdown") && (
                   <button
                     onClick={handleShowdown}
-                    disabled={loading}
+                    disabled={loading || !wallet}
                     className="pixel-btn pixel-btn-gold text-[7px]"
-                    style={{ padding: "4px 12px", opacity: loading ? 0.7 : 1 }}
+                    style={{ padding: "4px 12px", opacity: loading || !wallet ? 0.7 : 1 }}
                   >
-                    SHOWDOWN
+                    {game.phase === "showdown" ? "RESOLVE SHOWDOWN" : "SHOWDOWN"}
                   </button>
                 )}
               </div>
@@ -645,6 +994,9 @@ export function Table({ tableId }: TableProps) {
             myStack={userPlayer?.stack || 0}
             onAction={handleAction}
             onChainConfirmed={game.onChainConfirmed}
+            canStartHand={canStartHand}
+            canResolveShowdown={!!wallet}
+            statusHint={seatStatusHint}
           />
         </div>
 
@@ -677,7 +1029,7 @@ export function Table({ tableId }: TableProps) {
           {game.lastTxHash && (
             <div className="flex items-center gap-1">
               {game.onChainConfirmed ? (
-                <PixelHeart size={2} />
+                <PixelChip color="gold" size={2} />
               ) : (
                 <div style={{ width: "4px", height: "4px", background: "#f1c40f" }} />
               )}

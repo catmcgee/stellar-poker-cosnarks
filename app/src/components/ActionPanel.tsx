@@ -1,7 +1,8 @@
 "use client";
 
+import { useState } from "react";
 import type { GamePhase } from "@/lib/game-state";
-import { PixelHeart } from "./PixelCat";
+import { PixelChip } from "./PixelChip";
 
 interface ActionPanelProps {
   phase: GamePhase;
@@ -11,22 +12,45 @@ interface ActionPanelProps {
   myStack: number;
   onAction: (action: string, amount?: number) => void;
   onChainConfirmed?: boolean;
+  canStartHand?: boolean;
+  canResolveShowdown?: boolean;
+  statusHint?: string | null;
 }
 
 export function ActionPanel({
   phase,
+  isMyTurn,
+  currentBet,
+  myBet,
+  myStack,
   onAction,
   onChainConfirmed,
+  canStartHand = true,
+  canResolveShowdown = true,
+  statusHint = null,
 }: ActionPanelProps) {
+  const [betAmount, setBetAmount] = useState(0);
+
+  const callAmount = Math.max(currentBet - myBet, 0);
+  const minBet = Math.max(currentBet * 2, 1);
+  const maxBet = myStack;
+
   if (phase === "waiting") {
     return (
-      <div className="flex justify-center">
+      <div className="flex flex-col items-center gap-2">
         <button
           onClick={() => onAction("start")}
+          disabled={!canStartHand}
           className="pixel-btn pixel-btn-green text-[10px]"
+          style={{ opacity: canStartHand ? 1 : 0.6 }}
         >
           DEAL CARDS
         </button>
+        {statusHint && (
+          <span className="text-[7px]" style={{ color: "#f39c12" }}>
+            {statusHint}
+          </span>
+        )}
       </div>
     );
   }
@@ -40,33 +64,199 @@ export function ActionPanel({
           </span>
           {onChainConfirmed && (
             <span className="text-[7px] flex items-center gap-1" style={{ color: '#27ae60' }}>
-              <PixelHeart size={2} />
+              <PixelChip color="gold" size={2} />
               ON-CHAIN
             </span>
           )}
         </div>
+        {phase === "showdown" && (
+          <button
+            onClick={() => onAction("showdown")}
+            disabled={!canResolveShowdown}
+            className="pixel-btn pixel-btn-gold text-[9px]"
+            style={{ opacity: canResolveShowdown ? 1 : 0.6 }}
+          >
+            RESOLVE SHOWDOWN
+          </button>
+        )}
         {phase === "settlement" && (
           <button
             onClick={() => onAction("start")}
+            disabled={!canStartHand}
             className="pixel-btn pixel-btn-green text-[9px]"
+            style={{ opacity: canStartHand ? 1 : 0.6 }}
           >
             NEW HAND
           </button>
         )}
+        {statusHint && (
+          <span className="text-[7px]" style={{ color: "#f39c12" }}>
+            {statusHint}
+          </span>
+        )}
       </div>
     );
   }
+
+  // Active betting phase (preflop, flop, turn, river)
+  const isActive = ["preflop", "flop", "turn", "river"].includes(phase);
+  if (!isActive) {
+    return (
+      <div className="text-center">
+        <span className="text-[8px]" style={{ color: "#95a5a6" }}>
+          WAITING...
+        </span>
+      </div>
+    );
+  }
+
   return (
-    <div className="text-center">
-      <span
-        className="text-[8px]"
-        style={{
-          color: "#95a5a6",
-          textShadow: "1px 1px 0 rgba(0,0,0,0.4)",
-        }}
-      >
-        BETTING ACTIONS ARE CURRENTLY DRIVEN ON-CHAIN; USE THE DEAL/REVEAL BUTTONS ABOVE.
-      </span>
+    <div
+      className="pixel-border-thin flex flex-col items-center gap-3 px-4 py-3"
+      style={{
+        background: "rgba(10, 20, 30, 0.7)",
+        borderColor: "rgba(140, 170, 200, 0.4)",
+      }}
+    >
+      {/* Bet info row */}
+      <div className="flex items-center gap-4">
+        <div className="flex items-center gap-1">
+          <PixelChip color="red" size={2} />
+          <span className="text-[7px]" style={{ color: "#95a5a6" }}>
+            TABLE BET: {currentBet}
+          </span>
+        </div>
+        <div className="flex items-center gap-1">
+          <PixelChip color="blue" size={2} />
+          <span className="text-[7px]" style={{ color: "#95a5a6" }}>
+            YOUR BET: {myBet}
+          </span>
+        </div>
+        <div className="flex items-center gap-1">
+          <PixelChip color="gold" size={2} />
+          <span className="text-[7px]" style={{ color: "#27ae60" }}>
+            STACK: {myStack.toLocaleString()}
+          </span>
+        </div>
+      </div>
+
+      {/* Action buttons */}
+      <div className="flex items-center gap-2">
+        {/* FOLD */}
+        <button
+          onClick={() => onAction("fold")}
+          disabled={!isMyTurn}
+          className="pixel-btn text-[8px]"
+          style={{
+            padding: "5px 12px",
+            background: isMyTurn ? "#7b241c" : "#4a4a4a",
+            opacity: isMyTurn ? 1 : 0.5,
+            color: "white",
+            textShadow: "1px 1px 0 rgba(0,0,0,0.6)",
+          }}
+        >
+          FOLD
+        </button>
+
+        {/* CHECK / CALL */}
+        <button
+          onClick={() => onAction(callAmount === 0 ? "check" : "call", callAmount)}
+          disabled={!isMyTurn}
+          className="pixel-btn text-[8px]"
+          style={{
+            padding: "5px 12px",
+            background: isMyTurn ? "#1a5276" : "#4a4a4a",
+            opacity: isMyTurn ? 1 : 0.5,
+            color: "white",
+            textShadow: "1px 1px 0 rgba(0,0,0,0.6)",
+          }}
+        >
+          {callAmount === 0 ? "CHECK" : `CALL ${callAmount}`}
+        </button>
+
+        {/* BET / RAISE */}
+        <button
+          onClick={() => onAction(currentBet === 0 ? "bet" : "raise", betAmount || minBet)}
+          disabled={!isMyTurn || myStack <= callAmount}
+          className="pixel-btn text-[8px]"
+          style={{
+            padding: "5px 12px",
+            background: isMyTurn && myStack > callAmount ? "#7d6608" : "#4a4a4a",
+            opacity: isMyTurn && myStack > callAmount ? 1 : 0.5,
+            color: "white",
+            textShadow: "1px 1px 0 rgba(0,0,0,0.6)",
+          }}
+        >
+          {currentBet === 0 ? "BET" : "RAISE"} {betAmount || minBet}
+        </button>
+
+        {/* ALL IN */}
+        <button
+          onClick={() => onAction("allin", myStack)}
+          disabled={!isMyTurn || myStack <= 0}
+          className="pixel-btn text-[8px]"
+          style={{
+            padding: "5px 12px",
+            background: isMyTurn && myStack > 0 ? "#d4ac0d" : "#4a4a4a",
+            opacity: isMyTurn && myStack > 0 ? 1 : 0.5,
+            color: "#1a1a1a",
+            textShadow: "1px 1px 0 rgba(255,255,255,0.3)",
+            fontWeight: "bold",
+          }}
+        >
+          ALL IN
+        </button>
+      </div>
+
+      {/* Bet slider + quick buttons */}
+      {isMyTurn && myStack > callAmount && (
+        <div className="flex items-center gap-3 w-full max-w-sm">
+          <input
+            type="range"
+            min={minBet}
+            max={maxBet}
+            value={betAmount || minBet}
+            onChange={(e) => setBetAmount(Number(e.target.value))}
+            className="flex-1"
+            style={{
+              accentColor: "#f1c40f",
+              height: "4px",
+            }}
+          />
+          <div className="flex gap-1">
+            {[
+              { label: "50%", value: Math.floor(myStack * 0.5) },
+              { label: "75%", value: Math.floor(myStack * 0.75) },
+              { label: "MAX", value: myStack },
+            ].map((preset) => (
+              <button
+                key={preset.label}
+                onClick={() => setBetAmount(Math.max(preset.value, minBet))}
+                className="pixel-btn text-[6px]"
+                style={{
+                  padding: "3px 6px",
+                  background: "#2c3e50",
+                  color: "#c8e6ff",
+                }}
+              >
+                {preset.label}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {!isMyTurn && (
+        <span className="text-[7px]" style={{ color: "#95a5a6", fontStyle: "italic" }}>
+          WAITING FOR OPPONENT...
+        </span>
+      )}
+
+      {statusHint && (
+        <span className="text-[7px]" style={{ color: "#f39c12" }}>
+          {statusHint}
+        </span>
+      )}
     </div>
   );
 }

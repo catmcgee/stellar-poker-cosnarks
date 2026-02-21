@@ -1,148 +1,78 @@
 "use client";
 
 /**
- * PixelCat — CSS-only pixel art cat sprites.
- * Three variants: grey tabby, orange tabby, black cat.
- * These are placeholders — user will provide custom cat images later.
+ * PixelCat — renders cat sprite images from /cat_sprites/.
+ * Available sprites: 17, 18, 19, 20, 21.
+ * Sprite 18 is the user's cat (always shown with a golden glow).
  */
 
-type CatVariant = "grey" | "orange" | "black";
+// Opponent sprites cycle through these
+const OPPONENT_SPRITES = [17, 19, 20, 21];
 
-interface PixelCatProps {
-  variant?: CatVariant;
-  size?: number;
-  idle?: boolean;
-  flipped?: boolean;
+/** Pick a non-18 sprite for an opponent seat index */
+export function opponentSprite(seatIndex: number): number {
+  return OPPONENT_SPRITES[seatIndex % OPPONENT_SPRITES.length];
 }
 
-const CAT_COLORS: Record<CatVariant, { body: string; dark: string; light: string; belly: string; eyes: string }> = {
-  grey: {
-    body: '#9e9e9e',
-    dark: '#757575',
-    light: '#bdbdbd',
-    belly: '#e0e0e0',
-    eyes: '#4caf50',
-  },
-  orange: {
-    body: '#e67e22',
-    dark: '#d35400',
-    light: '#f0a04b',
-    belly: '#fdebd0',
-    eyes: '#27ae60',
-  },
-  black: {
-    body: '#2c2c2c',
-    dark: '#1a1a1a',
-    light: '#444444',
-    belly: '#555555',
-    eyes: '#f1c40f',
-  },
-};
+interface PixelCatProps {
+  /** Sprite number (17-21). Default 18. */
+  sprite?: number;
+  /** Width in pixels. Default 48. */
+  size?: number;
+  /** Idle bounce animation. Default true. */
+  idle?: boolean;
+  /** Mirror horizontally. */
+  flipped?: boolean;
+  /** Render the golden user glow. */
+  isUser?: boolean;
+}
 
-export function PixelCat({ variant = "orange", size = 4, idle = true, flipped = false }: PixelCatProps) {
-  const c = CAT_COLORS[variant];
-  const px = size;
-
+export function PixelCat({
+  sprite = 18,
+  size = 48,
+  idle = true,
+  flipped = false,
+  isUser = false,
+}: PixelCatProps) {
   return (
     <div
       style={{
-        display: 'inline-block',
-        animation: idle ? 'catIdle 2s ease-in-out infinite' : undefined,
-        transform: flipped ? 'scaleX(-1)' : undefined,
+        display: "inline-block",
+        position: "relative",
+        animation: idle ? "catIdle 2s ease-in-out infinite" : undefined,
+        transform: flipped ? "scaleX(-1)" : undefined,
       }}
     >
-      <div style={{
-        width: `${px}px`,
-        height: `${px}px`,
-        background: 'transparent',
-        boxShadow: `
-          /* Ears */
-          ${2*px}px ${0*px}px 0 ${c.dark},
-          ${3*px}px ${0*px}px 0 ${c.body},
-          ${7*px}px ${0*px}px 0 ${c.body},
-          ${8*px}px ${0*px}px 0 ${c.dark},
-
-          ${2*px}px ${1*px}px 0 ${c.body},
-          ${3*px}px ${1*px}px 0 ${c.light},
-          ${7*px}px ${1*px}px 0 ${c.light},
-          ${8*px}px ${1*px}px 0 ${c.body},
-
-          /* Head top */
-          ${3*px}px ${2*px}px 0 ${c.body},
-          ${4*px}px ${2*px}px 0 ${c.body},
-          ${5*px}px ${2*px}px 0 ${c.body},
-          ${6*px}px ${2*px}px 0 ${c.body},
-          ${7*px}px ${2*px}px 0 ${c.body},
-
-          /* Head row with eyes */
-          ${2*px}px ${3*px}px 0 ${c.body},
-          ${3*px}px ${3*px}px 0 ${c.eyes},
-          ${4*px}px ${3*px}px 0 ${c.body},
-          ${5*px}px ${3*px}px 0 ${c.body},
-          ${6*px}px ${3*px}px 0 ${c.body},
-          ${7*px}px ${3*px}px 0 ${c.eyes},
-          ${8*px}px ${3*px}px 0 ${c.body},
-
-          /* Nose/mouth row */
-          ${2*px}px ${4*px}px 0 ${c.body},
-          ${3*px}px ${4*px}px 0 ${c.body},
-          ${4*px}px ${4*px}px 0 ${c.body},
-          ${5*px}px ${4*px}px 0 #ffb6c1,
-          ${6*px}px ${4*px}px 0 ${c.body},
-          ${7*px}px ${4*px}px 0 ${c.body},
-          ${8*px}px ${4*px}px 0 ${c.body},
-
-          /* Whisker row */
-          ${0*px}px ${4*px}px 0 ${c.dark},
-          ${1*px}px ${3*px}px 0 ${c.dark},
-          ${9*px}px ${3*px}px 0 ${c.dark},
-          ${10*px}px ${4*px}px 0 ${c.dark},
-
-          /* Body */
-          ${3*px}px ${5*px}px 0 ${c.body},
-          ${4*px}px ${5*px}px 0 ${c.belly},
-          ${5*px}px ${5*px}px 0 ${c.belly},
-          ${6*px}px ${5*px}px 0 ${c.belly},
-          ${7*px}px ${5*px}px 0 ${c.body},
-
-          ${2*px}px ${6*px}px 0 ${c.body},
-          ${3*px}px ${6*px}px 0 ${c.body},
-          ${4*px}px ${6*px}px 0 ${c.belly},
-          ${5*px}px ${6*px}px 0 ${c.belly},
-          ${6*px}px ${6*px}px 0 ${c.belly},
-          ${7*px}px ${6*px}px 0 ${c.body},
-          ${8*px}px ${6*px}px 0 ${c.body},
-
-          ${2*px}px ${7*px}px 0 ${c.body},
-          ${3*px}px ${7*px}px 0 ${c.belly},
-          ${4*px}px ${7*px}px 0 ${c.belly},
-          ${5*px}px ${7*px}px 0 ${c.belly},
-          ${6*px}px ${7*px}px 0 ${c.belly},
-          ${7*px}px ${7*px}px 0 ${c.belly},
-          ${8*px}px ${7*px}px 0 ${c.body},
-
-          /* Legs */
-          ${2*px}px ${8*px}px 0 ${c.body},
-          ${3*px}px ${8*px}px 0 ${c.body},
-          ${4*px}px ${8*px}px 0 ${c.belly},
-          ${5*px}px ${8*px}px 0 ${c.belly},
-          ${6*px}px ${8*px}px 0 ${c.belly},
-          ${7*px}px ${8*px}px 0 ${c.body},
-          ${8*px}px ${8*px}px 0 ${c.body},
-
-          /* Paws */
-          ${2*px}px ${9*px}px 0 ${c.dark},
-          ${3*px}px ${9*px}px 0 ${c.dark},
-          ${7*px}px ${9*px}px 0 ${c.dark},
-          ${8*px}px ${9*px}px 0 ${c.dark},
-
-          /* Tail */
-          ${9*px}px ${6*px}px 0 ${c.body},
-          ${10*px}px ${5*px}px 0 ${c.body},
-          ${11*px}px ${4*px}px 0 ${c.body},
-          ${11*px}px ${3*px}px 0 ${c.dark}
-        `,
-      }} />
+      {/* User glow ring */}
+      {isUser && (
+        <div
+          style={{
+            position: "absolute",
+            inset: `-${Math.round(size * 0.15)}px`,
+            borderRadius: "50%",
+            background:
+              "radial-gradient(ellipse at center, rgba(241,196,15,0.35) 0%, rgba(241,196,15,0.12) 50%, transparent 70%)",
+            animation: "userGlow 2s ease-in-out infinite",
+            pointerEvents: "none",
+            zIndex: 0,
+          }}
+        />
+      )}
+      <img
+        src={`/cat_sprites/${sprite}.png`}
+        alt={`Cat sprite ${sprite}`}
+        width={size}
+        height={size}
+        style={{
+          imageRendering: "pixelated",
+          display: "block",
+          position: "relative",
+          zIndex: 1,
+          filter: isUser
+            ? "drop-shadow(0 0 6px rgba(241,196,15,0.7)) drop-shadow(0 0 12px rgba(241,196,15,0.35))"
+            : undefined,
+        }}
+      />
     </div>
   );
 }

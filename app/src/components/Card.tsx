@@ -8,57 +8,19 @@ interface CardProps {
   size?: "sm" | "md" | "lg";
 }
 
+const SUIT_SYMBOLS: Record<string, string> = {
+  hearts: '♥',
+  diamonds: '♦',
+  clubs: '♣',
+  spades: '♠',
+};
+
 const SUIT_COLORS: Record<string, string> = {
   hearts: '#e74c3c',
   diamonds: '#e74c3c',
   clubs: '#2c3e50',
   spades: '#2c3e50',
 };
-
-/* Pixel-art suit sprites via box-shadow. Each suit is drawn on a 5x5 "pixel" grid. */
-function PixelSuit({ suit, px }: { suit: string; px: number }) {
-  const c = SUIT_COLORS[suit] || '#2c3e50';
-
-  const sprites: Record<string, string> = {
-    hearts: `
-      ${1*px}px ${0}px 0 ${c}, ${3*px}px ${0}px 0 ${c},
-      ${0}px ${1*px}px 0 ${c}, ${1*px}px ${1*px}px 0 ${c}, ${2*px}px ${1*px}px 0 ${c}, ${3*px}px ${1*px}px 0 ${c}, ${4*px}px ${1*px}px 0 ${c},
-      ${0}px ${2*px}px 0 ${c}, ${1*px}px ${2*px}px 0 ${c}, ${2*px}px ${2*px}px 0 ${c}, ${3*px}px ${2*px}px 0 ${c}, ${4*px}px ${2*px}px 0 ${c},
-      ${1*px}px ${3*px}px 0 ${c}, ${2*px}px ${3*px}px 0 ${c}, ${3*px}px ${3*px}px 0 ${c},
-      ${2*px}px ${4*px}px 0 ${c}
-    `,
-    diamonds: `
-      ${2*px}px ${0}px 0 ${c},
-      ${1*px}px ${1*px}px 0 ${c}, ${2*px}px ${1*px}px 0 ${c}, ${3*px}px ${1*px}px 0 ${c},
-      ${0}px ${2*px}px 0 ${c}, ${1*px}px ${2*px}px 0 ${c}, ${2*px}px ${2*px}px 0 ${c}, ${3*px}px ${2*px}px 0 ${c}, ${4*px}px ${2*px}px 0 ${c},
-      ${1*px}px ${3*px}px 0 ${c}, ${2*px}px ${3*px}px 0 ${c}, ${3*px}px ${3*px}px 0 ${c},
-      ${2*px}px ${4*px}px 0 ${c}
-    `,
-    clubs: `
-      ${2*px}px ${0}px 0 ${c},
-      ${0}px ${1*px}px 0 ${c}, ${1*px}px ${1*px}px 0 ${c}, ${2*px}px ${1*px}px 0 ${c}, ${3*px}px ${1*px}px 0 ${c}, ${4*px}px ${1*px}px 0 ${c},
-      ${0}px ${2*px}px 0 ${c}, ${1*px}px ${2*px}px 0 ${c}, ${2*px}px ${2*px}px 0 ${c}, ${3*px}px ${2*px}px 0 ${c}, ${4*px}px ${2*px}px 0 ${c},
-      ${2*px}px ${3*px}px 0 ${c},
-      ${1*px}px ${4*px}px 0 ${c}, ${2*px}px ${4*px}px 0 ${c}, ${3*px}px ${4*px}px 0 ${c}
-    `,
-    spades: `
-      ${2*px}px ${0}px 0 ${c},
-      ${1*px}px ${1*px}px 0 ${c}, ${2*px}px ${1*px}px 0 ${c}, ${3*px}px ${1*px}px 0 ${c},
-      ${0}px ${2*px}px 0 ${c}, ${1*px}px ${2*px}px 0 ${c}, ${2*px}px ${2*px}px 0 ${c}, ${3*px}px ${2*px}px 0 ${c}, ${4*px}px ${2*px}px 0 ${c},
-      ${0}px ${3*px}px 0 ${c}, ${1*px}px ${3*px}px 0 ${c}, ${2*px}px ${3*px}px 0 ${c}, ${3*px}px ${3*px}px 0 ${c}, ${4*px}px ${3*px}px 0 ${c},
-      ${1*px}px ${4*px}px 0 ${c}, ${2*px}px ${4*px}px 0 ${c}, ${3*px}px ${4*px}px 0 ${c}
-    `,
-  };
-
-  return (
-    <div style={{
-      width: `${px}px`,
-      height: `${px}px`,
-      background: 'transparent',
-      boxShadow: sprites[suit] || sprites.spades,
-    }} />
-  );
-}
 
 /* Pixel card back: dark blue with a small star/S pattern */
 function CardBack({ w, h }: { w: number; h: number }) {
@@ -96,9 +58,9 @@ function CardBack({ w, h }: { w: number; h: number }) {
 
 export function Card({ value, faceDown = false, size = "md" }: CardProps) {
   const dims = {
-    sm: { w: 44, h: 62, suitPx: 2, rankSize: '7px' },
-    md: { w: 56, h: 80, suitPx: 3, rankSize: '8px' },
-    lg: { w: 72, h: 100, suitPx: 3, rankSize: '10px' },
+    sm: { w: 44, h: 62, suitSize: '16px', rankSize: '7px' },
+    md: { w: 56, h: 80, suitSize: '22px', rankSize: '9px' },
+    lg: { w: 72, h: 100, suitSize: '28px', rankSize: '11px' },
   };
   const d = dims[size];
 
@@ -109,6 +71,8 @@ export function Card({ value, faceDown = false, size = "md" }: CardProps) {
   const card = decodeCard(value);
   const color = card.color === 'red' ? '#e74c3c' : '#2c3e50';
 
+  const suitSymbol = SUIT_SYMBOLS[card.suit] || '♠';
+
   return (
     <div
       className="pixel-border-white flex flex-col items-center justify-between animate-card-deal"
@@ -117,32 +81,38 @@ export function Card({ value, faceDown = false, size = "md" }: CardProps) {
         height: `${d.h}px`,
         background: '#fefefe',
         padding: '4px',
+        imageRendering: 'auto',
       }}
     >
-      {/* Top-left rank */}
-      <div className="w-full flex justify-start" style={{
+      {/* Top-left rank + suit */}
+      <div className="w-full flex flex-col items-start" style={{
         color,
-        fontSize: d.rankSize,
         lineHeight: 1,
         paddingLeft: '2px',
       }}>
-        {card.rank}
+        <span style={{ fontSize: d.rankSize }}>{card.rank}</span>
+        <span style={{ fontSize: d.rankSize, fontFamily: 'serif' }}>{suitSymbol}</span>
       </div>
 
       {/* Center suit */}
-      <div className="flex items-center justify-center flex-1">
-        <PixelSuit suit={card.suit} px={d.suitPx} />
+      <div className="flex items-center justify-center flex-1" style={{
+        color,
+        fontSize: d.suitSize,
+        fontFamily: 'serif',
+        lineHeight: 1,
+      }}>
+        {suitSymbol}
       </div>
 
-      {/* Bottom-right rank (inverted) */}
-      <div className="w-full flex justify-end" style={{
+      {/* Bottom-right rank + suit (inverted) */}
+      <div className="w-full flex flex-col items-end" style={{
         color,
-        fontSize: d.rankSize,
         lineHeight: 1,
         paddingRight: '2px',
         transform: 'rotate(180deg)',
       }}>
-        {card.rank}
+        <span style={{ fontSize: d.rankSize }}>{card.rank}</span>
+        <span style={{ fontSize: d.rankSize, fontFamily: 'serif' }}>{suitSymbol}</span>
       </div>
     </div>
   );

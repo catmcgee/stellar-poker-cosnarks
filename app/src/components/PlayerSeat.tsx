@@ -1,7 +1,8 @@
 "use client";
 
 import { Card } from "./Card";
-import { PixelCat, PixelHeart } from "./PixelCat";
+import { PixelCat, opponentSprite } from "./PixelCat";
+import { PixelChipStack } from "./PixelChip";
 import type { Player } from "@/lib/game-state";
 
 interface PlayerSeatProps {
@@ -12,12 +13,6 @@ interface PlayerSeatProps {
   isWinner?: boolean;
 }
 
-const SEAT_CATS: Array<{ variant: "grey" | "orange" | "black"; flipped?: boolean }> = [
-  { variant: "orange" },
-  { variant: "grey", flipped: true },
-  { variant: "black" },
-];
-
 export function PlayerSeat({
   player,
   isCurrentTurn,
@@ -25,8 +20,7 @@ export function PlayerSeat({
   isUser,
   isWinner = false,
 }: PlayerSeatProps) {
-  const catConfig = SEAT_CATS[player.seat % SEAT_CATS.length];
-
+  const sprite = isUser ? 18 : opponentSprite(player.seat);
   const cardSize = isUser ? "md" : "sm";
 
   return (
@@ -74,9 +68,9 @@ export function PlayerSeat({
       {/* Cat avatar */}
       <div style={{ marginBottom: '4px' }}>
         <PixelCat
-          variant={catConfig.variant}
-          size={isUser ? 6 : 4}
-          flipped={catConfig.flipped}
+          sprite={sprite}
+          size={isUser ? 72 : 48}
+          isUser={isUser}
         />
       </div>
 
@@ -95,18 +89,29 @@ export function PlayerSeat({
         )}
       </div>
 
-      {/* Stack */}
-      <div className="text-[8px] mt-1" style={{
-        color: '#27ae60',
-        textShadow: '1px 1px 0 rgba(0,0,0,0.4)',
-      }}>
-        {player.stack.toLocaleString()} XLM
+      {/* Stack with chip visuals */}
+      <div className="flex items-center gap-2 mt-1">
+        <PixelChipStack amount={player.stack} size={isUser ? 2 : 1} />
+        <span className="text-[8px]" style={{
+          color: '#27ae60',
+          textShadow: '1px 1px 0 rgba(0,0,0,0.4)',
+        }}>
+          {player.stack.toLocaleString()} XLM
+        </span>
       </div>
 
-      {/* Bet */}
+      {/* Bet with chip visuals */}
       {player.betThisRound > 0 && (
-        <div className="text-[7px]" style={{ color: '#f1c40f' }}>
-          BET: {player.betThisRound}
+        <div
+          className="flex items-center gap-1"
+          style={{
+            animation: "chipBounce 0.4s ease-out",
+          }}
+        >
+          <PixelChipStack amount={player.betThisRound} size={1} />
+          <span className="text-[7px]" style={{ color: '#f1c40f' }}>
+            BET: {player.betThisRound}
+          </span>
         </div>
       )}
 

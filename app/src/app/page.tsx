@@ -3,7 +3,8 @@
 import { useState, useEffect } from "react";
 import Link from "next/link";
 import { PixelWorld } from "@/components/PixelWorld";
-import { PixelCat, PixelHeart } from "@/components/PixelCat";
+import { PixelCat } from "@/components/PixelCat";
+import { PixelChip } from "@/components/PixelChip";
 
 export default function Home() {
   const [tableId, setTableId] = useState(0);
@@ -25,9 +26,9 @@ export default function Home() {
             transition: 'opacity 0.5s ease-in',
             transitionDelay: '0.2s',
           }}>
-            <PixelHeart size={5} beating />
-            <PixelHeart size={5} beating />
-            <PixelHeart size={5} beating />
+            <PixelChip color="red" size={5} />
+            <PixelChip color="gold" size={5} />
+            <PixelChip color="blue" size={5} />
           </div>
 
           {/* Title */}
@@ -119,9 +120,9 @@ export default function Home() {
         {/* Logo area */}
         <div className="text-center">
           <div className="flex gap-2 justify-center mb-3">
-            <PixelHeart size={4} beating />
-            <PixelHeart size={4} beating />
-            <PixelHeart size={4} beating />
+            <PixelChip color="red" size={4} />
+            <PixelChip color="gold" size={4} />
+            <PixelChip color="blue" size={4} />
           </div>
           <h1 className="text-3xl md:text-4xl leading-relaxed" style={{
             color: 'white',
@@ -134,24 +135,26 @@ export default function Home() {
             color: '#c8e6ff',
             textShadow: '1px 1px 0 rgba(0,0,0,0.5)',
           }}>
-            PRIVATE CARDS VIA MPC + ZK PROOFS
+            PRIVATE POKER ON THE BLOCKCHAIN
           </p>
         </div>
 
         {/* Join table panel */}
-        <div className="pixel-border p-6 flex flex-col items-center gap-5" style={{
-          background: 'var(--ui-panel)',
+        <div className="p-6 flex flex-col items-center gap-5" style={{
+          background: 'rgba(12, 10, 24, 0.88)',
+          border: '4px solid #c47d2e',
+          boxShadow: 'inset -4px -4px 0px 0px rgba(0,0,0,0.3), inset 4px 4px 0px 0px rgba(255,255,255,0.08), 0 4px 0 0 rgba(0,0,0,0.4), 0 0 20px rgba(196, 125, 46, 0.08)',
           minWidth: '320px',
         }}>
           <h2 className="text-xs" style={{
-            color: '#f1c40f',
+            color: '#ffc078',
             textShadow: '1px 1px 0 rgba(0,0,0,0.6)',
           }}>
             JOIN A TABLE
           </h2>
 
           <div className="flex items-center gap-3">
-            <label className="text-[8px]" style={{ color: '#bdc3c7' }}>TABLE:</label>
+            <label className="text-[8px]" style={{ color: '#a0a8b8' }}>TABLE:</label>
             <input
               type="number"
               value={tableId}
@@ -167,31 +170,6 @@ export default function Home() {
           >
             PLAY NOW
           </Link>
-
-          <div className="text-[7px] text-center leading-relaxed max-w-xs" style={{ color: '#7f8c8d' }}>
-            NO SINGLE PARTY SEES YOUR CARDS.
-            MPC COMMITTEE SHUFFLES AND DEALS
-            USING REP3 SECRET SHARING.
-          </div>
-        </div>
-
-        {/* Feature cards */}
-        <div className="flex flex-wrap gap-4 justify-center max-w-2xl">
-          <FeatureCard
-            icon={<PixelCat variant="grey" size={3} />}
-            title="PRIVATE"
-            desc="REP3 MPC HIDES YOUR HAND"
-          />
-          <FeatureCard
-            icon={<PixelHeart size={3} />}
-            title="ZK VERIFIED"
-            desc="ULTRAHONK PROOFS ON-CHAIN"
-          />
-          <FeatureCard
-            icon={<PixelCat variant="black" size={3} flipped />}
-            title="ON-CHAIN"
-            desc="SOROBAN SETTLES BETS"
-          />
         </div>
 
         {/* Cats at bottom */}
@@ -206,14 +184,3 @@ export default function Home() {
   );
 }
 
-function FeatureCard({ icon, title, desc }: { icon: React.ReactNode; title: string; desc: string }) {
-  return (
-    <div className="pixel-border-thin p-4 flex flex-col items-center gap-2 w-36" style={{
-      background: 'rgba(20, 12, 8, 0.75)',
-    }}>
-      <div className="mb-1">{icon}</div>
-      <div className="text-[8px]" style={{ color: '#f1c40f' }}>{title}</div>
-      <div className="text-[6px] text-center leading-relaxed" style={{ color: '#95a5a6' }}>{desc}</div>
-    </div>
-  );
-}

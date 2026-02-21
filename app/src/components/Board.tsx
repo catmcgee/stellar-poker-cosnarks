@@ -1,6 +1,7 @@
 "use client";
 
 import { Card } from "./Card";
+import { PotChipPile } from "./PixelChip";
 
 interface BoardProps {
   cards: number[];
@@ -12,22 +13,11 @@ export function Board({ cards, pot }: BoardProps) {
     <div className="flex flex-col items-center gap-3">
       {/* Pot display */}
       <div className="flex items-center gap-2">
-        {/* Pixel coin */}
-        <div style={{
-          width: '4px',
-          height: '4px',
-          background: 'transparent',
-          boxShadow: `
-            4px 0 0 #f1c40f, 8px 0 0 #f1c40f,
-            0 4px 0 #f1c40f, 4px 4px 0 #f4d03f, 8px 4px 0 #d4ac0d, 12px 4px 0 #f1c40f,
-            0 8px 0 #f1c40f, 4px 8px 0 #f4d03f, 8px 8px 0 #d4ac0d, 12px 8px 0 #f1c40f,
-            4px 12px 0 #f1c40f, 8px 12px 0 #f1c40f
-          `,
-        }} />
+        <PotChipPile amount={pot} size={2} />
         <span className="text-[10px]" style={{
           color: '#f1c40f',
           textShadow: '1px 1px 0 rgba(0,0,0,0.6)',
-          marginLeft: '16px',
+          marginLeft: '4px',
         }}>
           POT: {pot.toLocaleString()} XLM
         </span>

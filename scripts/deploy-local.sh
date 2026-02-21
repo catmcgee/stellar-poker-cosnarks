@@ -18,6 +18,12 @@ NETWORK="local"
 NETWORK_PASSPHRASE="Standalone Network ; February 2017"
 RPC_URL="http://localhost:8000/soroban/rpc"
 IDENTITY="committee-local"
+MAX_PLAYERS="${MAX_PLAYERS:-2}"
+
+if ! [[ "$MAX_PLAYERS" =~ ^[0-9]+$ ]] || [ "$MAX_PLAYERS" -lt 2 ] || [ "$MAX_PLAYERS" -gt 6 ]; then
+    echo "ERROR: MAX_PLAYERS must be an integer between 2 and 6 (got '$MAX_PLAYERS')"
+    exit 1
+fi
 
 echo "=== Stellar Poker Local Deployment ==="
 echo ""
@@ -57,7 +63,12 @@ stellar network add "$NETWORK" \
 echo "Generating identities..."
 FRIENDBOT_URL="http://localhost:8000/friendbot"
 
-for IDENT in "$IDENTITY" player1-local player2-local; do
+IDENTS=("$IDENTITY")
+for i in $(seq 1 "$MAX_PLAYERS"); do
+    IDENTS+=("player${i}-local")
+done
+
+for IDENT in "${IDENTS[@]}"; do
     stellar keys generate "$IDENT" --overwrite 2>/dev/null || true
     ADDR=$(stellar keys address "$IDENT")
     echo "  Funding $IDENT ($ADDR)..."
@@ -68,11 +79,16 @@ done
 
 COMMITTEE_SECRET=$(stellar keys show "$IDENTITY")
 COMMITTEE_ADDRESS=$(stellar keys address "$IDENTITY")
-PLAYER1_ADDRESS=$(stellar keys address player1-local)
-PLAYER2_ADDRESS=$(stellar keys address player2-local)
+declare -a PLAYER_ADDRESSES=()
+for i in $(seq 1 "$MAX_PLAYERS"); do
+    PLAYER_ADDRESSES+=("$(stellar keys address "player${i}-local")")
+done
+PLAYER1_ADDRESS="${PLAYER_ADDRESSES[0]}"
+PLAYER2_ADDRESS="${PLAYER_ADDRESSES[1]}"
 echo "  Committee: $COMMITTEE_ADDRESS"
-echo "  Player 1:  $PLAYER1_ADDRESS"
-echo "  Player 2:  $PLAYER2_ADDRESS"
+for i in $(seq 1 "$MAX_PLAYERS"); do
+    echo "  Player $i:  ${PLAYER_ADDRESSES[$((i-1))]}"
+done
 
 # 4. Build contracts
 echo ""
@@ -187,7 +203,7 @@ TABLE_ID=$(stellar contract invoke \
     --network "$NETWORK" \
     -- create_table \
     --admin "$COMMITTEE_ADDRESS" \
-    --config "{\"token\":\"$TOKEN_CONTRACT\",\"min_buy_in\":\"1000000000\",\"max_buy_in\":\"100000000000\",\"small_blind\":\"500000000\",\"big_blind\":\"1000000000\",\"max_players\":2,\"timeout_ledgers\":100,\"committee\":\"$COMMITTEE_ADDRESS\",\"verifier\":\"$ZK_VERIFIER\",\"game_hub\":\"$GAME_HUB\"}")
+    --config "{\"token\":\"$TOKEN_CONTRACT\",\"min_buy_in\":\"1000000000\",\"max_buy_in\":\"100000000000\",\"small_blind\":\"500000000\",\"big_blind\":\"1000000000\",\"max_players\":$MAX_PLAYERS,\"timeout_ledgers\":100,\"committee\":\"$COMMITTEE_ADDRESS\",\"verifier\":\"$ZK_VERIFIER\",\"game_hub\":\"$GAME_HUB\"}")
 echo "  Table ID: $TABLE_ID"
 
 # 10. Mint/wrap XLM for players and have them join
@@ -198,25 +214,19 @@ echo "Setting up players..."
 # On local standalone, funded accounts have 10000 XLM = 100000000000 stroops
 BUY_IN=10000000000  # 1000 XLM in stroops
 
-echo "  Player 1 joining table..."
-stellar contract invoke \
-    --id "$POKER_TABLE" \
-    --source player1-local \
-    --network "$NETWORK" \
-    -- join_table \
-    --table_id "$TABLE_ID" \
-    --player "$PLAYER1_ADDRESS" \
-    --buy_in "$BUY_IN" || echo "  WARNING: Player 1 join failed"
-
-echo "  Player 2 joining table..."
-stellar contract invoke \
-    --id "$POKER_TABLE" \
-    --source player2-local \
-    --network "$NETWORK" \
-    -- join_table \
-    --table_id "$TABLE_ID" \
-    --player "$PLAYER2_ADDRESS" \
-    --buy_in "$BUY_IN" || echo "  WARNING: Player 2 join failed"
+for i in $(seq 1 "$MAX_PLAYERS"); do
+    ident="player${i}-local"
+    addr="${PLAYER_ADDRESSES[$((i-1))]}"
+    echo "  Player $i joining table..."
+    stellar contract invoke \
+        --id "$POKER_TABLE" \
+        --source "$ident" \
+        --network "$NETWORK" \
+        -- join_table \
+        --table_id "$TABLE_ID" \
+        --player "$addr" \
+        --buy_in "$BUY_IN" || echo "  WARNING: Player $i join failed"
+done
 
 # 11. Start hand (sets phase to Dealing)
 echo ""
@@ -240,12 +250,20 @@ GAME_HUB_CONTRACT=$GAME_HUB
 TOKEN_CONTRACT=$TOKEN_CONTRACT
 TABLE_ID=$TABLE_ID
 ONCHAIN_TABLE_ID=$TABLE_ID
+MAX_PLAYERS=$MAX_PLAYERS
 COMMITTEE_SECRET=$COMMITTEE_SECRET
 COMMITTEE_ADDRESS=$COMMITTEE_ADDRESS
-PLAYER1_ADDRESS=$PLAYER1_ADDRESS
-PLAYER2_ADDRESS=$PLAYER2_ADDRESS
 NETWORK_PASSPHRASE="$NETWORK_PASSPHRASE"
 EOF
+
+for i in $(seq 1 "$MAX_PLAYERS"); do
+    ident="player${i}-local"
+    addr="${PLAYER_ADDRESSES[$((i-1))]}"
+    cat >> "$ENV_FILE" << EOF
+PLAYER${i}_ADDRESS=$addr
+PLAYER${i}_IDENTITY=$ident
+EOF
+done
 
 echo ""
 echo "=== Deployment Complete ==="
@@ -257,8 +275,10 @@ echo "  Committee Registry: $COMMITTEE_REGISTRY"
 echo "  Token (native SAC): $TOKEN_CONTRACT"
 echo "  On-chain Table ID:  $TABLE_ID"
 echo "  Committee Address:  $COMMITTEE_ADDRESS"
-echo "  Player 1:           $PLAYER1_ADDRESS"
-echo "  Player 2:           $PLAYER2_ADDRESS"
+echo "  Players seeded:     $MAX_PLAYERS"
+for i in $(seq 1 "$MAX_PLAYERS"); do
+    echo "  Player $i:           ${PLAYER_ADDRESSES[$((i-1))]}"
+done
 echo ""
 echo "  Environment written to: $ENV_FILE"
 echo ""

@@ -225,7 +225,7 @@ pub async fn generate_proof_from_share_sets(
         circuit_name,
     )
     .await?;
-    trigger_and_collect_proof(session_id, circuit_dir, node_endpoints).await
+    trigger_and_collect_proof(session_id, circuit_name, circuit_dir, node_endpoints).await
 }
 
 #[derive(Deserialize)]
@@ -468,6 +468,7 @@ async fn dispatch_share_sets_from_nodes(
 
 async fn trigger_and_collect_proof(
     session_id: &str,
+    circuit_name: &str,
     circuit_dir: &str,
     node_endpoints: &[String],
 ) -> Result<MpcProofResult, String> {
@@ -516,7 +517,11 @@ async fn trigger_and_collect_proof(
 
     // Poll node 0 for proof completion.
     let proof_node = &node_endpoints[0];
-    let max_polls = 300;
+    let max_polls = if circuit_name == "showdown_valid" {
+        900
+    } else {
+        300
+    };
     for _ in 0..max_polls {
         tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
 
