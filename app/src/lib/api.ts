@@ -1,5 +1,6 @@
 const API_BASE = process.env.NEXT_PUBLIC_COORDINATOR_URL || "http://localhost:8080";
 const INSECURE_AUTH_ENV = process.env.NEXT_PUBLIC_ALLOW_INSECURE_DEV_AUTH;
+export const COORDINATOR_API_BASE = API_BASE;
 
 function parseEnvBool(value: string | undefined): boolean | null {
   if (value === undefined) return null;
@@ -9,12 +10,7 @@ function parseEnvBool(value: string | undefined): boolean | null {
   return null;
 }
 
-const isLocalApiBase =
-  API_BASE.startsWith("http://localhost") ||
-  API_BASE.startsWith("https://localhost") ||
-  API_BASE.startsWith("http://127.0.0.1") ||
-  API_BASE.startsWith("https://127.0.0.1");
-const USE_INSECURE_DEV_AUTH = parseEnvBool(INSECURE_AUTH_ENV) ?? isLocalApiBase;
+const USE_INSECURE_DEV_AUTH = parseEnvBool(INSECURE_AUTH_ENV) ?? false;
 
 export interface DealResponse {
   status: string;
@@ -70,6 +66,12 @@ export interface CommitteeStatusResponse {
   nodes: number;
   healthy: boolean[];
   status: string;
+}
+
+export interface ChainConfigResponse {
+  rpc_url: string;
+  network_passphrase: string;
+  poker_table_contract: string;
 }
 
 export interface CreateTableResponse {
@@ -239,8 +241,22 @@ export async function requestDeal(
 
 export async function createTable(
   auth: AuthSigner,
-  maxPlayers: number
+  maxPlayers: number,
+  solo = false,
+  buyIn?: string
 ): Promise<CreateTableResponse> {
+  const payload: {
+    max_players: number;
+    solo: boolean;
+    buy_in?: string;
+  } = {
+    max_players: maxPlayers,
+    solo,
+  };
+  if (buyIn) {
+    payload.buy_in = buyIn;
+  }
+
   const res = await authedFetch(
     `${API_BASE}/api/tables/create`,
     {
@@ -248,7 +264,7 @@ export async function createTable(
       headers: {
         "Content-Type": "application/json",
       },
-      body: JSON.stringify({ max_players: maxPlayers }),
+      body: JSON.stringify(payload),
     },
     0,
     "create_table",
@@ -283,6 +299,14 @@ export async function listOpenTables(): Promise<OpenTablesResponse> {
   const res = await fetch(`${API_BASE}/api/tables/open`);
   if (!res.ok) {
     throw new Error(await readApiError(res, `Open tables failed: ${res.status}`));
+  }
+  return res.json();
+}
+
+export async function getChainConfig(): Promise<ChainConfigResponse> {
+  const res = await fetch(`${API_BASE}/api/chain-config`);
+  if (!res.ok) {
+    throw new Error(await readApiError(res, `Chain config failed: ${res.status}`));
   }
   return res.json();
 }

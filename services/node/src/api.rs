@@ -88,7 +88,10 @@ pub async fn post_prepare_deal(
             return Err((StatusCode::BAD_REQUEST, "empty player address".to_string()));
         }
         if !seen.insert(player) {
-            return Err((StatusCode::BAD_REQUEST, "duplicate player address".to_string()));
+            return Err((
+                StatusCode::BAD_REQUEST,
+                "duplicate player address".to_string(),
+            ));
         }
     }
 
@@ -167,7 +170,10 @@ pub async fn post_dispatch_shares(
         return Err((StatusCode::BAD_REQUEST, "missing share_set_id".to_string()));
     }
     if req.proof_session_id.trim().is_empty() {
-        return Err((StatusCode::BAD_REQUEST, "missing proof_session_id".to_string()));
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "missing proof_session_id".to_string(),
+        ));
     }
     if req.circuit_name.trim().is_empty() {
         return Err((StatusCode::BAD_REQUEST, "missing circuit_name".to_string()));
@@ -208,7 +214,10 @@ pub async fn post_perm_lookup(
     Json(req): Json<PermLookupRequest>,
 ) -> Result<Json<PermLookupResponse>, (StatusCode, String)> {
     if req.indices.is_empty() {
-        return Err((StatusCode::BAD_REQUEST, "indices must not be empty".to_string()));
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "indices must not be empty".to_string(),
+        ));
     }
 
     let tables = state.tables.read().await;
@@ -232,7 +241,10 @@ pub async fn post_shares(
     Json(req): Json<SharesRequest>,
 ) -> Result<StatusCode, (StatusCode, String)> {
     if req.total_parties == 0 {
-        return Err((StatusCode::BAD_REQUEST, "total_parties must be > 0".to_string()));
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "total_parties must be > 0".to_string(),
+        ));
     }
 
     let session_lock = {
@@ -288,9 +300,10 @@ pub async fn post_generate(
         .clone();
 
     let mut session = session_lock.write().await;
-    let expected_total_parties = session
-        .expected_total_parties
-        .ok_or((StatusCode::BAD_REQUEST, "no share fragments received".to_string()))?;
+    let expected_total_parties = session.expected_total_parties.ok_or((
+        StatusCode::BAD_REQUEST,
+        "no share fragments received".to_string(),
+    ))?;
     let partial_share_paths = session
         .partial_share_paths
         .iter()

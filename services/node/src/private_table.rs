@@ -183,7 +183,8 @@ pub async fn prepare_showdown(
         hand_commitments,
         deck_root,
     )?;
-    let share_data_by_party = split_partial_input(circuit_dir, "showdown_valid", &input_toml).await?;
+    let share_data_by_party =
+        split_partial_input(circuit_dir, "showdown_valid", &input_toml).await?;
 
     let share_set_id = new_share_set_id(table_id);
     state
@@ -325,7 +326,9 @@ pub async fn dispatch_share_payloads(
     }
 
     for handle in handles {
-        handle.await.map_err(|e| format!("dispatch join error: {}", e))??;
+        handle
+            .await
+            .map_err(|e| format!("dispatch join error: {}", e))??;
     }
     Ok(())
 }
@@ -430,7 +433,10 @@ fn build_showdown_partial_toml(
     let mut padded_commitments = vec!["0".to_string(); MAX_PLAYERS];
     for (i, c) in hand_commitments.iter().enumerate() {
         if i >= MAX_PLAYERS {
-            return Err(format!("too many hand commitments: {}", hand_commitments.len()));
+            return Err(format!(
+                "too many hand commitments: {}",
+                hand_commitments.len()
+            ));
         }
         padded_commitments[i] = c.clone();
     }
@@ -454,7 +460,10 @@ fn build_showdown_partial_toml(
             "hand_commitments = {}",
             format_field_array(&padded_commitments)
         ));
-        lines.push(format!("board_indices = {}", format_u32_array(board_indices)));
+        lines.push(format!(
+            "board_indices = {}",
+            format_u32_array(board_indices)
+        ));
         lines.push(format!("deck_root = \"{}\"", deck_root));
     }
 
@@ -472,7 +481,10 @@ async fn split_partial_input(
     std::fs::create_dir_all(&out_dir).map_err(|e| format!("create out dir: {}", e))?;
     std::fs::write(&input_path, input_toml).map_err(|e| format!("write partial input: {}", e))?;
 
-    let circuit_path = format!("{}/{}/target/{}.json", circuit_dir, circuit_name, circuit_name);
+    let circuit_path = format!(
+        "{}/{}/target/{}.json",
+        circuit_dir, circuit_name, circuit_name
+    );
     validate_circuit_artifact_compatibility(&circuit_path)?;
 
     let output = Command::new("co-noir")
@@ -521,8 +533,8 @@ fn collect_split_shares(out_dir: &Path) -> Result<HashMap<u32, String>, String> 
     let mut share_data_by_party: HashMap<u32, String> = HashMap::new();
 
     for (fallback_idx, path) in files.iter().enumerate() {
-        let bytes =
-            std::fs::read(path).map_err(|e| format!("failed to read share file {:?}: {}", path, e))?;
+        let bytes = std::fs::read(path)
+            .map_err(|e| format!("failed to read share file {:?}: {}", path, e))?;
         let share_b64 = base64::engine::general_purpose::STANDARD.encode(bytes);
 
         let party_id = parse_party_id_from_share_filename(path)

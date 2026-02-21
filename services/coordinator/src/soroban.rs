@@ -4,6 +4,7 @@
 //! the on-chain poker-table contract. Uses the same `tokio::process::Command`
 //! pattern as `mpc.rs` for co-noir subprocess execution.
 
+use std::collections::HashSet;
 use std::str::FromStr;
 
 use ark_bn254::Fr;
@@ -33,8 +34,8 @@ impl SorobanConfig {
                     continue;
                 }
                 let identity_key = format!("PLAYER{}_IDENTITY", idx);
-                let identity = std::env::var(&identity_key)
-                    .unwrap_or_else(|_| format!("player{}-local", idx));
+                let identity =
+                    std::env::var(&identity_key).unwrap_or_else(|_| format!("player{}-local", idx));
                 player_identities.push((address, identity));
             }
         }
@@ -234,6 +235,33 @@ fn parse_i128_value(value: &serde_json::Value) -> Option<i128> {
     }
 }
 
+fn parse_u32_value(value: &serde_json::Value) -> Option<u32> {
+    match value {
+        serde_json::Value::String(s) => s.parse::<u32>().ok(),
+        serde_json::Value::Number(n) => n.as_u64().and_then(|v| u32::try_from(v).ok()),
+        _ => None,
+    }
+}
+
+fn resolve_buy_in_from_table_state(state: &serde_json::Value, requested: i128) -> i128 {
+    let min_buy_in = state
+        .get("config")
+        .and_then(|cfg| cfg.get("min_buy_in"))
+        .and_then(parse_i128_value)
+        .unwrap_or(requested.max(1));
+    let max_buy_in = state
+        .get("config")
+        .and_then(|cfg| cfg.get("max_buy_in"))
+        .and_then(parse_i128_value)
+        .unwrap_or(min_buy_in);
+
+    if min_buy_in <= max_buy_in {
+        requested.clamp(min_buy_in, max_buy_in)
+    } else {
+        requested
+    }
+}
+
 /// When reveal is requested directly from the frontend, advance one legal betting
 /// action if the on-chain table is still in a betting phase.
 pub async fn maybe_auto_advance_betting_for_reveal(
@@ -296,7 +324,8 @@ async fn maybe_auto_advance_betting_if_phase(
         let current_turn = state
             .get("current_turn")
             .and_then(|v| v.as_u64())
-            .ok_or("missing current_turn in on-chain table state")? as usize;
+            .ok_or("missing current_turn in on-chain table state")?
+            as usize;
 
         let current_player = players
             .get(current_turn)
@@ -323,7 +352,11 @@ async fn maybe_auto_advance_betting_if_phase(
             .and_then(parse_i128_value)
             .unwrap_or(0);
 
-        let action_json = if my_bet < current_bet { "\"Call\"" } else { "\"Check\"" };
+        let action_json = if my_bet < current_bet {
+            "\"Call\""
+        } else {
+            "\"Check\""
+        };
         let onchain_table_id = resolve_onchain_table_id(config, table_id);
         tracing::info!(
             "Auto-advancing betting before {}: phase={}, action={}, player={}, step={}",
@@ -633,13 +666,12 @@ pub async fn claim_timeout(config: &SorobanConfig, table_id: u32) -> Result<Stri
     parse_tx_result(output)
 }
 
-/// Create a new table by cloning the reference table config and pre-seeding
-/// seats with configured local player identities.
+/// Create a new table by cloning the reference table config.
 pub async fn create_seeded_table(
     config: &SorobanConfig,
     reference_table_id: u32,
     max_players: u32,
-    buy_in: i128,
+    buy_in_override: Option<i128>,
 ) -> Result<u32, String> {
     if !config.is_configured() {
         return Err("Soroban not configured".to_string());
@@ -647,21 +679,15 @@ pub async fn create_seeded_table(
     if !(2..=6).contains(&max_players) {
         return Err(format!("max_players out of range: {}", max_players));
     }
-    if config.player_identities.len() < max_players as usize {
-        return Err(format!(
-            "not enough configured player identities: have {}, need {}",
-            config.player_identities.len(),
-            max_players
-        ));
-    }
 
     let raw = get_table_state(config, reference_table_id).await?;
-    let value: serde_json::Value =
-        serde_json::from_str(&raw).map_err(|e| format!("failed to parse reference table: {}", e))?;
+    let value: serde_json::Value = serde_json::from_str(&raw)
+        .map_err(|e| format!("failed to parse reference table: {}", e))?;
     let mut cfg = value
         .get("config")
         .cloned()
         .ok_or("reference table missing config")?;
+
     if let Some(obj) = cfg.as_object_mut() {
         obj.insert(
             "max_players".to_string(),
@@ -671,6 +697,20 @@ pub async fn create_seeded_table(
             "committee".to_string(),
             serde_json::Value::String(config.committee_address()?),
         );
+        if let Some(buy_in) = buy_in_override {
+            if buy_in <= 0 {
+                return Err(format!("buy_in must be > 0 (got {})", buy_in));
+            }
+            // Enforce exact buy-in for newly created tables when requested.
+            obj.insert(
+                "min_buy_in".to_string(),
+                serde_json::Value::String(buy_in.to_string()),
+            );
+            obj.insert(
+                "max_buy_in".to_string(),
+                serde_json::Value::String(buy_in.to_string()),
+            );
+        }
     } else {
         return Err("reference config is not an object".to_string());
     }
@@ -699,34 +739,91 @@ pub async fn create_seeded_table(
     let table_id = parse_u32_from_stdout(&String::from_utf8_lossy(&output.stdout))
         .ok_or_else(|| "failed to parse table id from create_table output".to_string())?;
 
-    let onchain_table_id = resolve_onchain_table_id(config, table_id);
-    for (player_address, identity) in config.player_identities.iter().take(max_players as usize) {
-        let join_output = invoke_contract_with_source_retries(
-            config,
-            identity,
-            vec![
-                "join_table".to_string(),
-                "--table_id".to_string(),
-                onchain_table_id.to_string(),
-                "--player".to_string(),
-                player_address.clone(),
-                "--buy_in".to_string(),
-                buy_in.to_string(),
-            ],
-        )
-        .await?;
-
-        parse_tx_result(join_output)?;
-    }
-
     Ok(table_id)
 }
 
-/// Read on-chain table state via `stellar contract invoke -- get_table`.
-pub async fn get_table_state(
+/// Join the next unseated configured local identity to the table.
+pub async fn join_next_available_local_player(
     config: &SorobanConfig,
     table_id: u32,
+    buy_in: i128,
 ) -> Result<String, String> {
+    if !config.is_configured() {
+        return Err("Soroban not configured".to_string());
+    }
+
+    let state_raw = get_table_state(config, table_id).await?;
+    let state: serde_json::Value = serde_json::from_str(&state_raw)
+        .map_err(|e| format!("failed to parse on-chain table state: {}", e))?;
+
+    let phase = state
+        .get("phase")
+        .and_then(|v| v.as_str())
+        .ok_or("missing phase in on-chain table state")?;
+    if phase != "Waiting" {
+        return Err(format!(
+            "table {} is not accepting joins (phase={})",
+            table_id, phase
+        ));
+    }
+
+    let players = state
+        .get("players")
+        .and_then(|v| v.as_array())
+        .ok_or("missing players in on-chain table state")?;
+    let max_players = state
+        .get("config")
+        .and_then(|cfg| cfg.get("max_players"))
+        .and_then(parse_u32_value)
+        .unwrap_or(players.len() as u32);
+    if players.len() as u32 >= max_players {
+        return Err(format!("table {} is full", table_id));
+    }
+
+    let seated: HashSet<String> = players
+        .iter()
+        .filter_map(|p| p.get("address").and_then(|v| v.as_str()))
+        .map(|s| s.to_string())
+        .collect();
+
+    let (player_address, identity) = config
+        .player_identities
+        .iter()
+        .find(|(address, _)| !seated.contains(address))
+        .ok_or("no unseated local identity available")?;
+
+    let resolved_buy_in = resolve_buy_in_from_table_state(&state, buy_in);
+    let onchain_table_id = resolve_onchain_table_id(config, table_id);
+    let output = invoke_contract_with_source_retries(
+        config,
+        identity,
+        vec![
+            "join_table".to_string(),
+            "--table_id".to_string(),
+            onchain_table_id.to_string(),
+            "--player".to_string(),
+            player_address.clone(),
+            "--buy_in".to_string(),
+            resolved_buy_in.to_string(),
+        ],
+    )
+    .await?;
+    parse_tx_result(output)?;
+
+    Ok(player_address.clone())
+}
+
+/// Join one configured local identity as a deterministic "bot" seat for solo mode.
+pub async fn join_single_bot_player(
+    config: &SorobanConfig,
+    table_id: u32,
+    buy_in: i128,
+) -> Result<String, String> {
+    join_next_available_local_player(config, table_id, buy_in).await
+}
+
+/// Read on-chain table state via `stellar contract invoke -- get_table`.
+pub async fn get_table_state(config: &SorobanConfig, table_id: u32) -> Result<String, String> {
     if !config.is_configured() {
         return Err("Soroban not configured".to_string());
     }
@@ -783,7 +880,10 @@ fn convert_keccak_proof_to_soroban(proof_bytes: &[u8]) -> Result<Vec<u8>, String
     const PAIRING_POINTS_SIZE: usize = 16;
 
     if proof_bytes.len() % FIELD_SIZE != 0 {
-        return Err(format!("proof not 32-byte aligned: {} bytes", proof_bytes.len()));
+        return Err(format!(
+            "proof not 32-byte aligned: {} bytes",
+            proof_bytes.len()
+        ));
     }
 
     let num_fields = proof_bytes.len() / FIELD_SIZE;
@@ -799,20 +899,28 @@ fn convert_keccak_proof_to_soroban(proof_bytes: &[u8]) -> Result<Vec<u8>, String
     if log_n_calc <= 0 || log_n_calc % 11 != 0 {
         return Err(format!(
             "cannot derive log_n from proof size: {} fields (remainder {})",
-            num_fields, log_n_calc % 11
+            num_fields,
+            log_n_calc % 11
         ));
     }
     let log_n = (log_n_calc / 11) as usize;
 
     // Verify derived log_n is reasonable
     if log_n < 10 || log_n > 25 {
-        return Err(format!("derived log_n={} out of reasonable range [10,25]", log_n));
+        return Err(format!(
+            "derived log_n={} out of reasonable range [10,25]",
+            log_n
+        ));
     }
 
     // Verify total
-    let expected = PAIRING_POINTS_SIZE + NUM_G1_WIRE_POINTS * 2
-        + log_n * BATCHED_RELATION_PARTIAL_LENGTH + NUMBER_OF_ENTITIES
-        + (log_n - 1) * 2 + log_n + NUM_FINAL_G1 * 2;
+    let expected = PAIRING_POINTS_SIZE
+        + NUM_G1_WIRE_POINTS * 2
+        + log_n * BATCHED_RELATION_PARTIAL_LENGTH
+        + NUMBER_OF_ENTITIES
+        + (log_n - 1) * 2
+        + log_n
+        + NUM_FINAL_G1 * 2;
     if num_fields != expected {
         return Err(format!(
             "proof size mismatch: got {} fields, expected {} (log_n={})",
@@ -820,7 +928,11 @@ fn convert_keccak_proof_to_soroban(proof_bytes: &[u8]) -> Result<Vec<u8>, String
         ));
     }
 
-    tracing::info!("Proof conversion: {} fields, derived log_n={}", num_fields, log_n);
+    tracing::info!(
+        "Proof conversion: {} fields, derived log_n={}",
+        num_fields,
+        log_n
+    );
 
     let mut out = Vec::with_capacity(SOROBAN_PROOF_BYTES);
     let mut offset = 0usize;
@@ -873,7 +985,12 @@ fn convert_keccak_proof_to_soroban(proof_bytes: &[u8]) -> Result<Vec<u8>, String
         }
     }
     let pad_rounds = CONST_PROOF_SIZE_LOG_N - log_n;
-    out.extend(vec![0u8; pad_rounds * BATCHED_RELATION_PARTIAL_LENGTH * FIELD_SIZE]);
+    out.extend(vec![
+        0u8;
+        pad_rounds
+            * BATCHED_RELATION_PARTIAL_LENGTH
+            * FIELD_SIZE
+    ]);
 
     // 4) Sumcheck evaluations: 41 Fr (copy directly)
     for _ in 0..NUMBER_OF_ENTITIES {
@@ -910,20 +1027,24 @@ fn convert_keccak_proof_to_soroban(proof_bytes: &[u8]) -> Result<Vec<u8>, String
     if offset != proof_bytes.len() {
         return Err(format!(
             "proof conversion: consumed {} of {} bytes ({} fields leftover)",
-            offset, proof_bytes.len(), (proof_bytes.len() - offset) / FIELD_SIZE
+            offset,
+            proof_bytes.len(),
+            (proof_bytes.len() - offset) / FIELD_SIZE
         ));
     }
 
     if out.len() != SOROBAN_PROOF_BYTES {
         return Err(format!(
             "converted proof size mismatch: got {} bytes, expected {}",
-            out.len(), SOROBAN_PROOF_BYTES
+            out.len(),
+            SOROBAN_PROOF_BYTES
         ));
     }
 
     tracing::info!(
         "Proof converted: {} bytes (keccak, log_n={}) → {} bytes (soroban)",
-        proof_bytes.len(), log_n,
+        proof_bytes.len(),
+        log_n,
         out.len()
     );
 
@@ -952,8 +1073,7 @@ fn fields_to_bytes32_json(fields: &[String]) -> Result<String, String> {
         .iter()
         .map(|f| field_to_bytes32_hex(f))
         .collect::<Result<Vec<_>, _>>()?;
-    serde_json::to_string(&hex_strings)
-        .map_err(|e| format!("failed to serialize hex array: {}", e))
+    serde_json::to_string(&hex_strings).map_err(|e| format!("failed to serialize hex array: {}", e))
 }
 
 /// Convert proof public inputs (field element strings) to concatenated 32-byte big-endian
@@ -961,8 +1081,7 @@ fn fields_to_bytes32_json(fields: &[String]) -> Result<String, String> {
 fn public_inputs_to_hex(public_inputs: &[String]) -> Result<String, String> {
     let mut all_bytes = Vec::with_capacity(public_inputs.len() * 32);
     for pi in public_inputs {
-        let fr = Fr::from_str(pi)
-            .map_err(|_| format!("failed to parse public input: '{}'", pi))?;
+        let fr = Fr::from_str(pi).map_err(|_| format!("failed to parse public input: '{}'", pi))?;
         let bytes = fr.into_bigint().to_bytes_be();
         let mut padded = vec![0u8; 32 - bytes.len()];
         padded.extend_from_slice(&bytes);
@@ -977,10 +1096,7 @@ fn parse_tx_result(output: std::process::Output) -> Result<String, String> {
     let stderr = String::from_utf8_lossy(&output.stderr);
 
     if !output.status.success() {
-        return Err(format!(
-            "stellar contract invoke failed: {}",
-            stderr.trim()
-        ));
+        return Err(format!("stellar contract invoke failed: {}", stderr.trim()));
     }
 
     // The stellar CLI prints the tx hash or result to stdout

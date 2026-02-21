@@ -127,11 +127,8 @@ fn evaluate_five(cards: &[u32; 5]) -> HandRank {
     let is_straight = is_straight_hand(&ranks);
 
     // Also check A-2-3-4-5 (wheel)
-    let is_wheel = ranks[0] == 12
-        && ranks[1] == 3
-        && ranks[2] == 2
-        && ranks[3] == 1
-        && ranks[4] == 0;
+    let is_wheel =
+        ranks[0] == 12 && ranks[1] == 3 && ranks[2] == 2 && ranks[3] == 1 && ranks[4] == 0;
 
     // Count rank frequencies
     let mut freq = [0u32; NUM_RANKS as usize];
@@ -180,7 +177,11 @@ fn evaluate_five(cards: &[u32; 5]) -> HandRank {
     }
 
     if quads == 1 {
-        let kicker = ranks.iter().find(|&&r| r != quad_rank).copied().unwrap_or(0);
+        let kicker = ranks
+            .iter()
+            .find(|&&r| r != quad_rank)
+            .copied()
+            .unwrap_or(0);
         return HandRank::new(7, (quad_rank << 4) | kicker);
     }
 
@@ -210,9 +211,21 @@ fn evaluate_five(cards: &[u32; 5]) -> HandRank {
     }
 
     if pairs == 2 {
-        let high_pair = if pair_ranks[0] > pair_ranks[1] { pair_ranks[0] } else { pair_ranks[1] };
-        let low_pair = if pair_ranks[0] > pair_ranks[1] { pair_ranks[1] } else { pair_ranks[0] };
-        let kicker = ranks.iter().find(|&&r| r != high_pair && r != low_pair).copied().unwrap_or(0);
+        let high_pair = if pair_ranks[0] > pair_ranks[1] {
+            pair_ranks[0]
+        } else {
+            pair_ranks[1]
+        };
+        let low_pair = if pair_ranks[0] > pair_ranks[1] {
+            pair_ranks[1]
+        } else {
+            pair_ranks[0]
+        };
+        let kicker = ranks
+            .iter()
+            .find(|&&r| r != high_pair && r != low_pair)
+            .copied()
+            .unwrap_or(0);
         return HandRank::new(2, (high_pair << 8) | (low_pair << 4) | kicker);
     }
 
@@ -226,7 +239,10 @@ fn evaluate_five(cards: &[u32; 5]) -> HandRank {
                 ki += 1;
             }
         }
-        return HandRank::new(1, (pr << 12) | (kickers[0] << 8) | (kickers[1] << 4) | kickers[2]);
+        return HandRank::new(
+            1,
+            (pr << 12) | (kickers[0] << 8) | (kickers[1] << 4) | kickers[2],
+        );
     }
 
     // High card

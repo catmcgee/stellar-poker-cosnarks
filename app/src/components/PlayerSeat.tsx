@@ -13,6 +13,7 @@ interface PlayerSeatProps {
   isWinner?: boolean;
   isBot?: boolean;
   labelOverride?: string;
+  hideChipStats?: boolean;
 }
 
 export function PlayerSeat({
@@ -23,6 +24,7 @@ export function PlayerSeat({
   isWinner = false,
   isBot = false,
   labelOverride,
+  hideChipStats = false,
 }: PlayerSeatProps) {
   const sprite = isUser ? 18 : opponentSprite(player.seat);
   const cardSize = isUser ? "md" : "sm";
@@ -103,30 +105,34 @@ export function PlayerSeat({
         )}
       </div>
 
-      {/* Stack */}
-      <div className="flex items-center gap-1 mt-1">
-        <PixelChip color={player.stack >= 5000 ? "gold" : player.stack >= 500 ? "blue" : "red"} size={isUser ? 2 : 1} />
-        <span className="text-[10px]" style={{
-          color: '#27ae60',
-          textShadow: '1px 1px 0 rgba(0,0,0,0.4)',
-        }}>
-          {player.stack.toLocaleString()} CHIPS
-        </span>
-      </div>
+      {!hideChipStats && (
+        <>
+          {/* Stack */}
+          <div className="flex items-center gap-1 mt-1">
+            <PixelChip color={player.stack >= 5000 ? "gold" : player.stack >= 500 ? "blue" : "red"} size={isUser ? 2 : 1} />
+            <span className="text-[10px]" style={{
+              color: '#27ae60',
+              textShadow: '1px 1px 0 rgba(0,0,0,0.4)',
+            }}>
+              {player.stack.toLocaleString()} CHIPS
+            </span>
+          </div>
 
-      {/* Bet */}
-      {player.betThisRound > 0 && (
-        <div
-          className="flex items-center gap-1"
-          style={{
-            animation: "chipBounce 0.4s ease-out",
-          }}
-        >
-          <PixelChip color="gold" size={1} />
-          <span className="text-[9px]" style={{ color: '#f1c40f' }}>
-            BET: {player.betThisRound.toLocaleString()}
-          </span>
-        </div>
+          {/* Bet */}
+          {player.betThisRound > 0 && (
+            <div
+              className="flex items-center gap-1"
+              style={{
+                animation: "chipBounce 0.4s ease-out",
+              }}
+            >
+              <PixelChip color="gold" size={1} />
+              <span className="text-[9px]" style={{ color: '#f1c40f' }}>
+                BET: {player.betThisRound.toLocaleString()}
+              </span>
+            </div>
+          )}
+        </>
       )}
 
       {/* Status tags */}

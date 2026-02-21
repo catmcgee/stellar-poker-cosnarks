@@ -98,9 +98,12 @@ pub fn receive_share_fragment(
     let share_path = session
         .work_dir
         .join(format!("share_source_{}.shared", source_party_id));
-    std::fs::write(&share_path, &bytes).map_err(|e| format!("failed to write share file: {}", e))?;
+    std::fs::write(&share_path, &bytes)
+        .map_err(|e| format!("failed to write share file: {}", e))?;
 
-    session.partial_share_paths.insert(source_party_id, share_path);
+    session
+        .partial_share_paths
+        .insert(source_party_id, share_path);
     session.status = SessionStatus::SharesReceived;
     Ok(())
 }
@@ -123,7 +126,10 @@ pub async fn run_proof_generation(
     party_config_path: String,
     crs_path: String,
 ) -> Result<(Vec<u8>, Vec<String>), String> {
-    let circuit_path = format!("{}/{}/target/{}.json", circuit_dir, circuit_name, circuit_name);
+    let circuit_path = format!(
+        "{}/{}/target/{}.json",
+        circuit_dir, circuit_name, circuit_name
+    );
     let share_path = work_dir.join("Prover.toml");
     let witness_path = work_dir.join("witness.gz");
     let proof_path = work_dir.join("proof.bin");
@@ -180,7 +186,9 @@ pub async fn run_proof_generation(
 
     tracing::info!(
         "[{}] Starting witness generation for circuit {} (node {})",
-        session_id, circuit_name, node_id
+        session_id,
+        circuit_name,
+        node_id
     );
 
     // Step 1: Generate witness in MPC
@@ -211,7 +219,8 @@ pub async fn run_proof_generation(
 
     tracing::info!(
         "[{}] Witness generated, starting proof generation (node {})",
-        session_id, node_id
+        session_id,
+        node_id
     );
 
     // Step 2: Build and generate proof in MPC
@@ -249,8 +258,8 @@ pub async fn run_proof_generation(
         }
 
         let stderr = String::from_utf8_lossy(&proof_output.stderr);
-        let is_transient_resource_error = stderr.contains("No buffer space available")
-            || stderr.contains("os error 55");
+        let is_transient_resource_error =
+            stderr.contains("No buffer space available") || stderr.contains("os error 55");
 
         if is_transient_resource_error && attempt < 3 {
             tracing::warn!(
@@ -278,11 +287,15 @@ pub async fn run_proof_generation(
         ));
     }
 
-    tracing::info!("[{}] Proof generated successfully (node {})", session_id, node_id);
+    tracing::info!(
+        "[{}] Proof generated successfully (node {})",
+        session_id,
+        node_id
+    );
 
     // Read proof bytes
-    let proof_bytes = std::fs::read(&proof_path)
-        .map_err(|e| format!("failed to read proof file: {}", e))?;
+    let proof_bytes =
+        std::fs::read(&proof_path).map_err(|e| format!("failed to read proof file: {}", e))?;
     let public_inputs_bytes = std::fs::read(&public_inputs_path)
         .map_err(|e| format!("failed to read public inputs file: {}", e))?;
     let public_inputs: Vec<String> = serde_json::from_slice(&public_inputs_bytes)

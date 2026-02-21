@@ -81,7 +81,10 @@ async fn main() {
 
     let app = Router::new()
         .route("/health", get(|| async { "ok" }))
-        .route("/table/:table_id/prepare-deal", post(api::post_prepare_deal))
+        .route(
+            "/table/:table_id/prepare-deal",
+            post(api::post_prepare_deal),
+        )
         .route(
             "/table/:table_id/prepare-reveal/:phase",
             post(api::post_prepare_reveal),
@@ -94,10 +97,7 @@ async fn main() {
             "/table/:table_id/dispatch-shares",
             post(api::post_dispatch_shares),
         )
-        .route(
-            "/table/:table_id/perm-lookup",
-            post(api::post_perm_lookup),
-        )
+        .route("/table/:table_id/perm-lookup", post(api::post_perm_lookup))
         .route("/session/:id/shares", post(api::post_shares))
         .route("/session/:id/generate", post(api::post_generate))
         .route("/session/:id/status", get(api::get_status))

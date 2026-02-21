@@ -6,6 +6,7 @@ import { PixelWorld } from "@/components/PixelWorld";
 import { PixelCat } from "@/components/PixelCat";
 import { PixelChip } from "@/components/PixelChip";
 import * as api from "@/lib/api";
+import { joinTableOnChain } from "@/lib/onchain";
 import {
   connectFreighterWallet,
   trySilentReconnect,
@@ -13,6 +14,28 @@ import {
 } from "@/lib/freighter";
 
 type Screen = "splash" | "connect" | "menu" | "create" | "join";
+const STROOPS_PER_XLM = BigInt("10000000");
+
+function parseXlmToStroops(value: string): bigint | null {
+  const trimmed = value.trim();
+  if (!/^\d+(\.\d{1,7})?$/.test(trimmed)) {
+    return null;
+  }
+  const [whole, fraction = ""] = trimmed.split(".");
+  const fracPadded = (fraction + "0000000").slice(0, 7);
+  try {
+    return BigInt(whole) * STROOPS_PER_XLM + BigInt(fracPadded);
+  } catch {
+    return null;
+  }
+}
+
+function formatStroopsToXlm(value: bigint): string {
+  const whole = value / STROOPS_PER_XLM;
+  const fractional = (value % STROOPS_PER_XLM).toString().padStart(7, "0");
+  const trimmedFraction = fractional.replace(/0+$/, "");
+  return trimmedFraction ? `${whole}.${trimmedFraction}` : whole.toString();
+}
 
 export default function Home() {
   const router = useRouter();
@@ -22,6 +45,9 @@ export default function Home() {
   const [connecting, setConnecting] = useState(false);
   const [busy, setBusy] = useState(false);
   const [maxPlayers, setMaxPlayers] = useState(2);
+  const [buyInXlm, setBuyInXlm] = useState(
+    formatStroopsToXlm(BigInt("1000000000"))
+  );
   const [joinTableId, setJoinTableId] = useState("");
   const [error, setError] = useState<string | null>(null);
 
@@ -60,13 +86,26 @@ export default function Home() {
 
   const handleCreateTable = async (solo = false) => {
     if (!wallet) return;
+    const buyIn = parseXlmToStroops(buyInXlm);
+    if (buyIn === null || buyIn <= BigInt(0)) {
+      setError("Enter a valid buy-in amount in XLM");
+      return;
+    }
     setBusy(true);
     setError(null);
     try {
       const players = solo ? 2 : maxPlayers;
-      const created = await api.createTable(wallet, players);
-      // No separate joinTable needed — create_table already seats the creator.
-      const query = solo ? "?mode=single" : "";
+      const created = await api.createTable(wallet, players, solo, buyIn.toString());
+
+      if (!solo) {
+        await joinTableOnChain(wallet, created.table_id, buyIn);
+      }
+
+      const query = solo
+        ? "?mode=single"
+        : players >= 3
+          ? "?mode=multi"
+          : "?mode=headsup";
       router.push(`/table/${created.table_id}${query}`);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Create table failed");
@@ -85,7 +124,6 @@ export default function Home() {
     setBusy(true);
     setError(null);
     try {
-      await api.joinTable(id, wallet);
       router.push(`/table/${id}`);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Join table failed");
@@ -105,8 +143,8 @@ export default function Home() {
         setError("No open tables found");
         return;
       }
-      await api.joinTable(first.table_id, wallet);
-      router.push(`/table/${first.table_id}`);
+      const query = first.max_players >= 3 ? "?mode=multi" : "?mode=headsup";
+      router.push(`/table/${first.table_id}${query}`);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Join open table failed");
     } finally {
@@ -209,7 +247,7 @@ export default function Home() {
             <PixelCat sprite={17} size={80} />
           </div>
           <div
-            className="fixed bottom-[14%] left-[38%] z-[5]"
+            className="fixed bottom-[4%] left-[38%] z-[5]"
             style={{
               opacity: showContent ? 1 : 0,
               transition: "opacity 0.5s",
@@ -399,7 +437,24 @@ export default function Home() {
               CREATE TABLE
             </h2>
 
-            {/* Solo vs AI */}
+            <div className="w-full flex flex-col gap-2">
+              <div className="text-[10px]" style={{ color: "#c8e6ff" }}>
+                BUY-IN (XLM)
+              </div>
+              <input
+                type="text"
+                value={buyInXlm}
+                onChange={(e) => setBuyInXlm(e.target.value)}
+                placeholder="100"
+                disabled={busy}
+                className="w-full text-center text-[12px]"
+                style={{ padding: "8px 10px" }}
+              />
+              <div className="text-[9px]" style={{ color: "#95a5a6" }}>
+                Required table buy-in for each seat.
+              </div>
+            </div>
+
             <button
               onClick={() => void handleCreateTable(true)}
               disabled={busy || !wallet}
@@ -409,10 +464,9 @@ export default function Home() {
                 opacity: busy || !wallet ? 0.6 : 1,
               }}
             >
-              {busy ? "CREATING..." : "SOLO vs AI"}
+              {busy ? "CREATING..." : "SOLO VS AI"}
             </button>
 
-            {/* Divider */}
             <div
               className="w-full flex items-center gap-3"
               style={{ color: "#4a6a8a" }}
@@ -423,7 +477,7 @@ export default function Home() {
             </div>
 
             <div className="text-[10px]" style={{ color: "#c8e6ff" }}>
-              MULTIPLAYER
+              PLAYERS
             </div>
 
             <div className="flex gap-2">
@@ -574,7 +628,7 @@ export default function Home() {
         <div className="fixed bottom-[12%] left-[6%] z-[5]">
           <PixelCat sprite={19} size={80} />
         </div>
-        <div className="fixed bottom-[14%] left-[38%] z-[5]">
+        <div className="fixed bottom-[4%] left-[38%] z-[5]">
           <PixelCat sprite={18} size={96} />
         </div>
         <div className="fixed bottom-[12%] right-[6%] z-[5]">

@@ -3,6 +3,7 @@
 import { use } from "react";
 import { useSearchParams } from "next/navigation";
 import { Table } from "@/components/Table";
+import { PixelWorld } from "@/components/PixelWorld";
 
 export default function TablePage({
   params,
@@ -14,13 +15,26 @@ export default function TablePage({
   const tableId = parseInt(id, 10);
   const mode = searchParams.get("mode");
   const initialPlayMode =
-    mode === "single" ? "single" : undefined;
+    mode === "single" || mode === "headsup" || mode === "multi"
+      ? mode
+      : undefined;
 
   if (isNaN(tableId) || tableId < 0) {
     return (
-      <div className="min-h-screen flex items-center justify-center text-red-400">
-        Invalid table ID
-      </div>
+      <PixelWorld>
+        <div className="min-h-screen flex items-center justify-center p-6">
+          <div
+            className="pixel-border-thin px-4 py-3 text-[10px]"
+            style={{
+              background: "rgba(12, 10, 24, 0.88)",
+              color: "#ff7675",
+              borderColor: "#c47d2e",
+            }}
+          >
+            INVALID TABLE ID
+          </div>
+        </div>
+      </PixelWorld>
     );
   }
 

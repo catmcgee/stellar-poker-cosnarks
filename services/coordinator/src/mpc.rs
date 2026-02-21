@@ -80,10 +80,9 @@ pub async fn prepare_deal_from_nodes(
                 ));
             }
 
-            let prepared: NodePreparedSharesResponse = resp
-                .json()
-                .await
-                .map_err(|e| format!("failed to parse node {} prepare-deal response: {}", idx, e))?;
+            let prepared: NodePreparedSharesResponse = resp.json().await.map_err(|e| {
+                format!("failed to parse node {} prepare-deal response: {}", idx, e)
+            })?;
 
             Ok::<(usize, String), String>((idx, prepared.share_set_id))
         });
@@ -136,7 +135,10 @@ pub async fn prepare_reveal_from_nodes(
             }
 
             let prepared: NodePreparedSharesResponse = resp.json().await.map_err(|e| {
-                format!("failed to parse node {} prepare-reveal response: {}", idx, e)
+                format!(
+                    "failed to parse node {} prepare-reveal response: {}",
+                    idx, e
+                )
             })?;
 
             Ok::<(usize, String), String>((idx, prepared.share_set_id))
@@ -294,15 +296,9 @@ pub async fn resolve_hole_cards(
         node_responses[idx] = Some(resp);
     }
 
-    let resp0 = node_responses[0]
-        .take()
-        .ok_or("missing node 0 response")?;
-    let resp1 = node_responses[1]
-        .take()
-        .ok_or("missing node 1 response")?;
-    let resp2 = node_responses[2]
-        .take()
-        .ok_or("missing node 2 response")?;
+    let resp0 = node_responses[0].take().ok_or("missing node 0 response")?;
+    let resp1 = node_responses[1].take().ok_or("missing node 1 response")?;
+    let resp2 = node_responses[2].take().ok_or("missing node 2 response")?;
 
     // Sum salts from all 3 nodes (all at the same original positions).
     // Salts are u64 values; sum fits in u128, well below BN254 modulus.
@@ -460,7 +456,9 @@ async fn dispatch_share_sets_from_nodes(
     }
 
     for handle in handles {
-        handle.await.map_err(|e| format!("dispatch join error: {}", e))??;
+        handle
+            .await
+            .map_err(|e| format!("dispatch join error: {}", e))??;
     }
 
     Ok(())
@@ -504,7 +502,10 @@ async fn trigger_and_collect_proof(
                     .text()
                     .await
                     .unwrap_or_else(|_| "unable to read response body".to_string());
-                return Err(format!("node {} trigger failed: HTTP {}: {}", i, status, body));
+                return Err(format!(
+                    "node {} trigger failed: HTTP {}: {}",
+                    i, status, body
+                ));
             }
             Ok::<(), String>(())
         });

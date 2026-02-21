@@ -137,12 +137,10 @@ async fn main() {
         .route("/api/health", get(health))
         .route("/api/tables/create", post(api::create_table))
         .route("/api/tables/open", get(api::list_open_tables))
+        .route("/api/chain-config", get(api::get_chain_config))
         .route("/api/table/:table_id/join", post(api::join_table))
         .route("/api/table/:table_id/lobby", get(api::get_table_lobby))
-        .route(
-            "/api/table/:table_id/request-deal",
-            post(api::request_deal),
-        )
+        .route("/api/table/:table_id/request-deal", post(api::request_deal))
         .route(
             "/api/table/:table_id/request-reveal/:phase",
             post(api::request_reveal),

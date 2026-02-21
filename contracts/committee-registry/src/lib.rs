@@ -1,9 +1,7 @@
 #![no_std]
 #![allow(deprecated)]
 
-use soroban_sdk::{
-    contract, contractimpl, contracttype, token, Address, Env, Symbol, Vec,
-};
+use soroban_sdk::{contract, contractimpl, contracttype, token, Address, Env, Symbol, Vec};
 
 /// Committee Registry contract.
 ///
@@ -31,9 +29,9 @@ pub struct CommitteeMember {
 pub struct CommitteeEpoch {
     pub epoch_id: u32,
     pub members: Vec<Address>,
-    pub threshold: u32,   // Minimum members needed (2 of 3)
+    pub threshold: u32, // Minimum members needed (2 of 3)
     pub start_ledger: u32,
-    pub end_ledger: u32,  // 0 = no end (current epoch)
+    pub end_ledger: u32, // 0 = no end (current epoch)
 }
 
 #[contracttype]
@@ -51,12 +49,7 @@ pub enum RegistryKey {
 #[contractimpl]
 impl CommitteeRegistryContract {
     /// Initialize the registry.
-    pub fn initialize(
-        env: Env,
-        admin: Address,
-        stake_token: Address,
-        min_stake: i128,
-    ) {
+    pub fn initialize(env: Env, admin: Address, stake_token: Address, min_stake: i128) {
         admin.require_auth();
         assert!(
             !env.storage().instance().has(&RegistryKey::Admin),
@@ -73,12 +66,7 @@ impl CommitteeRegistryContract {
     }
 
     /// Register as a committee member with a stake.
-    pub fn register_member(
-        env: Env,
-        member: Address,
-        stake: i128,
-        endpoint: soroban_sdk::String,
-    ) {
+    pub fn register_member(env: Env, member: Address, stake: i128, endpoint: soroban_sdk::String) {
         member.require_auth();
 
         let min_stake: i128 = env
@@ -109,10 +97,8 @@ impl CommitteeRegistryContract {
             .persistent()
             .set(&RegistryKey::Member(member.clone()), &member_state);
 
-        env.events().publish(
-            (Symbol::new(&env, "member_registered"),),
-            member,
-        );
+        env.events()
+            .publish((Symbol::new(&env, "member_registered"),), member);
     }
 
     /// Withdraw stake and deregister (only when not in active epoch).
@@ -152,21 +138,14 @@ impl CommitteeRegistryContract {
             .persistent()
             .set(&RegistryKey::Member(member.clone()), &m);
 
-        env.events().publish(
-            (Symbol::new(&env, "member_deregistered"),),
-            member,
-        );
+        env.events()
+            .publish((Symbol::new(&env, "member_deregistered"),), member);
 
         stake
     }
 
     /// Admin creates a new committee epoch with selected members.
-    pub fn create_epoch(
-        env: Env,
-        admin: Address,
-        members: Vec<Address>,
-        threshold: u32,
-    ) -> u32 {
+    pub fn create_epoch(env: Env, admin: Address, members: Vec<Address>, threshold: u32) -> u32 {
         admin.require_auth();
         let stored_admin: Address = env
             .storage()
@@ -174,7 +153,10 @@ impl CommitteeRegistryContract {
             .get(&RegistryKey::Admin)
             .expect("not initialized");
         assert!(admin == stored_admin, "not admin");
-        assert!(members.len() >= threshold, "not enough members for threshold");
+        assert!(
+            members.len() >= threshold,
+            "not enough members for threshold"
+        );
 
         // Verify all members are registered and active
         for i in 0..members.len() {
@@ -222,10 +204,8 @@ impl CommitteeRegistryContract {
             .instance()
             .set(&RegistryKey::CurrentEpoch, &epoch_id);
 
-        env.events().publish(
-            (Symbol::new(&env, "epoch_created"), epoch_id),
-            members,
-        );
+        env.events()
+            .publish((Symbol::new(&env, "epoch_created"), epoch_id), members);
 
         epoch_id
     }

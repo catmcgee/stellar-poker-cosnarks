@@ -97,26 +97,28 @@ export function ActionPanel({
       }}
     >
       {/* Bet info row */}
-      <div className="flex items-center gap-4">
-        <div className="flex items-center gap-1">
-          <PixelChip color="red" size={2} />
-          <span className="text-[9px]" style={{ color: "#95a5a6" }}>
-            TABLE BET: {currentBet}
-          </span>
+      {!soloDisabled && (
+        <div className="flex items-center gap-4">
+          <div className="flex items-center gap-1">
+            <PixelChip color="red" size={2} />
+            <span className="text-[9px]" style={{ color: "#95a5a6" }}>
+              TABLE BET: {currentBet}
+            </span>
+          </div>
+          <div className="flex items-center gap-1">
+            <PixelChip color="blue" size={2} />
+            <span className="text-[9px]" style={{ color: "#95a5a6" }}>
+              YOUR BET: {myBet}
+            </span>
+          </div>
+          <div className="flex items-center gap-1">
+            <PixelChip color="gold" size={2} />
+            <span className="text-[9px]" style={{ color: "#27ae60" }}>
+              STACK: {myStack.toLocaleString()}
+            </span>
+          </div>
         </div>
-        <div className="flex items-center gap-1">
-          <PixelChip color="blue" size={2} />
-          <span className="text-[9px]" style={{ color: "#95a5a6" }}>
-            YOUR BET: {myBet}
-          </span>
-        </div>
-        <div className="flex items-center gap-1">
-          <PixelChip color="gold" size={2} />
-          <span className="text-[9px]" style={{ color: "#27ae60" }}>
-            STACK: {myStack.toLocaleString()}
-          </span>
-        </div>
-      </div>
+      )}
 
       {soloDisabled && (
         <span className="text-[9px]" style={{ color: "#f39c12", fontStyle: "italic" }}>

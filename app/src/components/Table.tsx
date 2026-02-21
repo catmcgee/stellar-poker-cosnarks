@@ -12,6 +12,7 @@ import { PixelChip } from "./PixelChip";
 import type { GameState, GamePhase } from "@/lib/game-state";
 import { createInitialState } from "@/lib/game-state";
 import * as api from "@/lib/api";
+import { joinTableOnChain, playerActionOnChain } from "@/lib/onchain";
 import {
   trySilentReconnect,
   type WalletSession,
@@ -50,6 +51,21 @@ function toNumber(value: unknown, fallback: number): number {
   return fallback;
 }
 
+function toBigInt(value: unknown, fallback: bigint): bigint {
+  if (typeof value === "bigint") return value;
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return BigInt(Math.trunc(value));
+  }
+  if (typeof value === "string" && value.trim().length > 0) {
+    try {
+      return BigInt(value.trim());
+    } catch {
+      return fallback;
+    }
+  }
+  return fallback;
+}
+
 function mapOnChainPhase(phase: string): GamePhase | null {
   switch (phase) {
     case "Waiting":
@@ -82,7 +98,7 @@ function mapOnChainPhase(phase: string): GamePhase | null {
 export function Table({ tableId, initialPlayMode }: TableProps) {
   const [game, setGame] = useState<GameState>(() => createInitialState(tableId));
   const [wallet, setWallet] = useState<WalletSession | null>(null);
-  const [playMode, setPlayMode] = useState<PlayMode>(initialPlayMode ?? "single");
+  const [playMode, setPlayMode] = useState<PlayMode>(initialPlayMode ?? "headsup");
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [joiningTable, setJoiningTable] = useState(false);
@@ -96,6 +112,7 @@ export function Table({ tableId, initialPlayMode }: TableProps) {
   const botTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const botStepRef = useRef<string>("");
   const botRetriesRef = useRef<Record<string, number>>({});
+  const inferredModeRef = useRef(false);
 
   const userAddress = wallet?.address;
   const userPlayer = userAddress
@@ -235,13 +252,24 @@ export function Table({ tableId, initialPlayMode }: TableProps) {
     return () => clearInterval(interval);
   }, [syncOnChainState]);
 
+  // Infer sensible default play mode from table capacity when no explicit mode was provided.
+  useEffect(() => {
+    if (inferredModeRef.current) return;
+    if (initialPlayMode) {
+      inferredModeRef.current = true;
+      return;
+    }
+    if (!lobby) return;
+    setPlayMode(lobby.max_players >= 3 ? "multi" : "headsup");
+    inferredModeRef.current = true;
+  }, [initialPlayMode, lobby]);
+
   // Silent reconnect on mount
   useEffect(() => {
     if (!wallet) {
       void trySilentReconnect().then((session) => {
         if (session) {
           setWallet(session);
-          void hydrateMyCards(session);
         }
       });
     }
@@ -269,7 +297,16 @@ export function Table({ tableId, initialPlayMode }: TableProps) {
     setJoiningTable(true);
     setError(null);
     try {
-      await api.joinTable(tableId, wallet);
+      const tableState = await api.getParsedTableState(tableId);
+      const minBuyInRaw =
+        tableState.parsed &&
+        typeof tableState.parsed === "object" &&
+        "config" in tableState.parsed
+          ? (tableState.parsed.config as { min_buy_in?: unknown })?.min_buy_in
+          : undefined;
+      const buyIn = toBigInt(minBuyInRaw, BigInt("1000000000"));
+
+      await joinTableOnChain(wallet, tableId, buyIn);
       await syncOnChainState();
       await hydrateMyCards(wallet);
     } catch (e) {
@@ -278,21 +315,6 @@ export function Table({ tableId, initialPlayMode }: TableProps) {
       setJoiningTable(false);
     }
   }, [hydrateMyCards, syncOnChainState, tableId, wallet]);
-
-  // Auto-join table when wallet is available but not yet seated
-  const autoJoinedRef = useRef(false);
-  useEffect(() => {
-    if (
-      wallet &&
-      !isWalletSeated &&
-      !joiningTable &&
-      !autoJoinedRef.current &&
-      game.phase === "waiting"
-    ) {
-      autoJoinedRef.current = true;
-      void handleJoinTable();
-    }
-  }, [wallet, isWalletSeated, joiningTable, game.phase, handleJoinTable]);
 
   const resolvePlayersForDeal = useCallback((): string[] | null => {
     if (!wallet) {
@@ -488,11 +510,11 @@ export function Table({ tableId, initialPlayMode }: TableProps) {
             typeof amount === "number" && Number.isFinite(amount)
               ? Math.max(1, Math.floor(amount))
               : undefined;
-          await api.playerAction(
+          await playerActionOnChain(
+            wallet,
             tableId,
             action as "fold" | "check" | "call" | "bet" | "raise" | "allin",
-            normalizedAmount,
-            wallet
+            normalizedAmount
           );
           await syncOnChainState();
         } catch (e) {
@@ -518,7 +540,11 @@ export function Table({ tableId, initialPlayMode }: TableProps) {
   );
 
   const currentBet = Math.max(...game.players.map((p) => p.betThisRound), 0);
-  const canStartHand = !!wallet;
+  const displayCurrentBet = playMode === "single" ? 0 : currentBet;
+  const displayPot = playMode === "single" ? 0 : game.pot;
+  const displayMyBet = playMode === "single" ? 0 : userPlayer?.betThisRound || 0;
+  const displayMyStack = playMode === "single" ? 0 : userPlayer?.stack || 0;
+  const canStartHand = !!wallet && isWalletSeated;
   const seatStatusHint =
     wallet && !isWalletSeated && seatedAddresses.length > 0
       ? "Connected wallet is not seated in this hand. Click JOIN TABLE first, then DEAL."
@@ -628,8 +654,8 @@ export function Table({ tableId, initialPlayMode }: TableProps) {
       return `${botLine}`;
     }
 
-    if (wallet && !isWalletSeated && seatedAddresses.length > 0) {
-      return `On-chain seats are ${tableSeatLabel}. Click DEAL CARDS to run a hand with your connected wallet.`;
+    if (playMode !== "single" && wallet && !isWalletSeated && seatedAddresses.length > 0) {
+      return `On-chain seats are ${tableSeatLabel}. Click JOIN TABLE to take a seat with this wallet.`;
     }
 
     switch (game.phase) {
@@ -847,6 +873,7 @@ export function Table({ tableId, initialPlayMode }: TableProps) {
                     isUser={false}
                     isWinner={!!winnerAddress && player.address === winnerAddress}
                     isBot={playMode === "single"}
+                    hideChipStats={playMode === "single"}
                   />
                 ))}
 
@@ -877,10 +904,20 @@ export function Table({ tableId, initialPlayMode }: TableProps) {
               borderBottom: '2px solid rgba(139, 105, 20, 0.2)',
               padding: '12px 0',
             }}>
-              <Board cards={game.boardCards} pot={game.pot} />
+              <Board cards={game.boardCards} pot={displayPot} />
 
               {/* Phase action buttons */}
               <div className="flex gap-2 mt-1">
+                {game.phase === "waiting" && wallet && !isWalletSeated && playMode !== "single" && (
+                  <button
+                    onClick={() => void handleJoinTable()}
+                    disabled={loading || joiningTable}
+                    className="pixel-btn pixel-btn-blue text-[9px]"
+                    style={{ padding: "6px 14px", opacity: loading || joiningTable ? 0.7 : 1 }}
+                  >
+                    {joiningTable ? "JOINING..." : "JOIN TABLE"}
+                  </button>
+                )}
                 {game.phase === "preflop" && (
                   <button
                     onClick={() => handleReveal("flop")}
@@ -933,6 +970,7 @@ export function Table({ tableId, initialPlayMode }: TableProps) {
                   isDealer={userPlayer.seat === game.dealerSeat}
                   isUser={true}
                   isWinner={!!winnerAddress && userPlayer.address === winnerAddress}
+                  hideChipStats={playMode === "single"}
                 />
               ) : (
                 <div className="flex flex-col items-center gap-2" style={{ opacity: 0.25 }}>
@@ -955,9 +993,9 @@ export function Table({ tableId, initialPlayMode }: TableProps) {
           <ActionPanel
             phase={game.phase}
             isMyTurn={isMyTurn}
-            currentBet={currentBet}
-            myBet={userPlayer?.betThisRound || 0}
-            myStack={userPlayer?.stack || 0}
+            currentBet={displayCurrentBet}
+            myBet={displayMyBet}
+            myStack={displayMyStack}
             onAction={handleAction}
             onChainConfirmed={game.onChainConfirmed}
             canStartHand={canStartHand}
@@ -1005,11 +1043,11 @@ export function Table({ tableId, initialPlayMode }: TableProps) {
           )}
         </div>
 
-        <div className="fixed bottom-[14%] left-[5%] z-[5]">
-          <PixelCat sprite={17} size={48} />
+        <div className="fixed bottom-0 left-[5%] z-[5]" style={{ transform: 'translateY(15%)' }}>
+          <PixelCat sprite={17} size={36} />
         </div>
-        <div className="fixed bottom-[13%] right-[5%] z-[5]">
-          <PixelCat sprite={21} size={56} flipped />
+        <div className="fixed bottom-0 right-[5%] z-[5]" style={{ transform: 'translateY(10%)' }}>
+          <PixelCat sprite={21} size={48} flipped />
         </div>
       </div>
 
