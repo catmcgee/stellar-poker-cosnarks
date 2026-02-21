@@ -162,7 +162,11 @@ pub async fn request_deal(
         Ok(h) if !h.is_empty() => Some(h),
         Ok(_) => None,
         Err(e) => {
-            tracing::warn!("Soroban deal proof submission failed (non-fatal): {}", e);
+            if state.soroban_config.is_configured() {
+                tracing::error!("Soroban deal proof submission failed: {}", e);
+                return Err(StatusCode::BAD_GATEWAY);
+            }
+            tracing::warn!("Soroban deal proof submission skipped/failed: {}", e);
             None
         }
     };
@@ -316,7 +320,11 @@ pub async fn request_reveal(
         Ok(h) if !h.is_empty() => Some(h),
         Ok(_) => None,
         Err(e) => {
-            tracing::warn!("Soroban reveal proof submission failed (non-fatal): {}", e);
+            if state.soroban_config.is_configured() {
+                tracing::error!("Soroban reveal proof submission failed: {}", e);
+                return Err(StatusCode::BAD_GATEWAY);
+            }
+            tracing::warn!("Soroban reveal proof submission skipped/failed: {}", e);
             None
         }
     };
@@ -449,7 +457,11 @@ pub async fn request_showdown(
         Ok(h) if !h.is_empty() => Some(h),
         Ok(_) => None,
         Err(e) => {
-            tracing::warn!("Soroban showdown proof submission failed (non-fatal): {}", e);
+            if state.soroban_config.is_configured() {
+                tracing::error!("Soroban showdown proof submission failed: {}", e);
+                return Err(StatusCode::BAD_GATEWAY);
+            }
+            tracing::warn!("Soroban showdown proof submission skipped/failed: {}", e);
             None
         }
     };

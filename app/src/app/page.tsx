@@ -18,7 +18,7 @@ export default function Home() {
   if (!pressStart) {
     return (
       <PixelWorld>
-        <div className="min-h-screen flex flex-col items-center justify-center gap-6 p-8">
+        <div className="min-h-screen flex flex-col items-center justify-center gap-6 p-8 cursor-pointer select-none" onClick={() => setPressStart(true)}>
           {/* Hearts row */}
           <div className="flex gap-3 mb-2" style={{
             opacity: showContent ? 1 : 0,
@@ -54,8 +54,7 @@ export default function Home() {
           </div>
 
           {/* Press to Start */}
-          <button
-            onClick={() => setPressStart(true)}
+          <div
             className="mt-6"
             style={{
               opacity: showContent ? 1 : 0,
@@ -65,36 +64,33 @@ export default function Home() {
               color: '#f5e6c8',
               textShadow: '2px 2px 0 #2c3e50',
               fontSize: '14px',
-              background: 'none',
-              border: 'none',
-              cursor: 'pointer',
               fontFamily: "'Press Start 2P', monospace",
             }}
           >
-            PRESS TO START
-          </button>
+            CLICK ANYWHERE TO START
+          </div>
 
           {/* Cats decorating the scene */}
-          <div className="fixed bottom-[14%] left-[8%] z-[5]" style={{
+          <div className="fixed bottom-[12%] left-[6%] z-[5]" style={{
             opacity: showContent ? 1 : 0,
             transition: 'opacity 0.5s',
             transitionDelay: '1s',
           }}>
-            <PixelCat variant="grey" size={5} />
+            <PixelCat variant="grey" size={10} />
           </div>
-          <div className="fixed bottom-[15%] left-[35%] z-[5]" style={{
+          <div className="fixed bottom-[14%] left-[38%] z-[5]" style={{
             opacity: showContent ? 1 : 0,
             transition: 'opacity 0.5s',
             transitionDelay: '1.2s',
           }}>
-            <PixelCat variant="orange" size={6} />
+            <PixelCat variant="orange" size={12} />
           </div>
-          <div className="fixed bottom-[13%] right-[8%] z-[5]" style={{
+          <div className="fixed bottom-[12%] right-[6%] z-[5]" style={{
             opacity: showContent ? 1 : 0,
             transition: 'opacity 0.5s',
             transitionDelay: '1.4s',
           }}>
-            <PixelCat variant="black" size={6} flipped />
+            <PixelCat variant="black" size={12} flipped />
           </div>
         </div>
       </PixelWorld>
@@ -103,7 +99,23 @@ export default function Home() {
 
   return (
     <PixelWorld>
-      <div className="min-h-screen flex flex-col items-center justify-center gap-8 p-8">
+      <div className="min-h-screen flex flex-col items-center justify-center gap-8 p-8 relative">
+        {/* Back button */}
+        <button
+          onClick={() => setPressStart(false)}
+          className="absolute top-6 left-6 z-20 text-[14px]"
+          style={{
+            color: '#f5e6c8',
+            textShadow: '2px 2px 0 #2c3e50',
+            background: 'none',
+            border: 'none',
+            cursor: 'pointer',
+            fontFamily: "'Press Start 2P', monospace",
+          }}
+        >
+          ←
+        </button>
+
         {/* Logo area */}
         <div className="text-center">
           <div className="flex gap-2 justify-center mb-3">

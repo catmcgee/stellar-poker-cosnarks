@@ -16,7 +16,6 @@ import requests
 from nacl.signing import SigningKey
 
 BASE = "http://localhost:8080"
-TABLE_ID = 2
 
 # --- Load on-chain config from .env.local ---
 ENV_FILE = os.path.join(os.path.dirname(__file__), "..", ".env.local")
@@ -32,10 +31,12 @@ if os.path.exists(ENV_FILE):
 POKER_TABLE_CONTRACT = env_vars.get("POKER_TABLE_CONTRACT", "")
 PLAYER1_ADDRESS = env_vars.get("PLAYER1_ADDRESS", "")
 PLAYER2_ADDRESS = env_vars.get("PLAYER2_ADDRESS", "")
+TABLE_ID = int(env_vars.get("TABLE_ID", os.environ.get("TABLE_ID", "0")))
 ON_CHAIN = bool(POKER_TABLE_CONTRACT)
 
 if ON_CHAIN:
     print(f"On-chain mode: contract={POKER_TABLE_CONTRACT}")
+    print(f"  Table ID: {TABLE_ID}")
     print(f"  Player 1: {PLAYER1_ADDRESS}")
     print(f"  Player 2: {PLAYER2_ADDRESS}")
 else:
@@ -85,7 +86,7 @@ def make_auth_headers(signing_key: SigningKey, address: str, table_id: int, acti
 def stellar_player_action(player_identity: str, table_id: int, player_address: str, action_json: str):
     """Call player_action on the poker-table contract."""
     if not ON_CHAIN:
-        return
+        return True
     cmd = [
         "stellar", "contract", "invoke",
         "--id", POKER_TABLE_CONTRACT,
@@ -119,7 +120,7 @@ def get_on_chain_phase():
         "--send=no",
         "--",
         "get_table",
-        "--table_id", "0",
+        "--table_id", str(TABLE_ID),
     ]
     result = subprocess.run(cmd, capture_output=True, text=True, timeout=15)
     if result.returncode == 0:
@@ -130,18 +131,54 @@ def get_on_chain_phase():
             return "parse_error"
     return "error"
 
+def ensure_on_chain_ready_for_deal():
+    """Ensure on-chain table is in Dealing phase before requesting MPC deal."""
+    if not ON_CHAIN:
+        return
+    phase = get_on_chain_phase()
+    if phase == "Dealing":
+        return
+    if phase in ("Waiting", "Settlement"):
+        print(f"  On-chain phase is {phase}; starting a new hand...")
+        cmd = [
+            "stellar", "contract", "invoke",
+            "--id", POKER_TABLE_CONTRACT,
+            "--source", "committee-local",
+            "--rpc-url", "http://localhost:8000/soroban/rpc",
+            "--network-passphrase", "Standalone Network ; February 2017",
+            "--",
+            "start_hand",
+            "--table_id", str(TABLE_ID),
+        ]
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+        if result.returncode != 0:
+            print(f"  ERROR: failed to start hand: {result.stderr.strip()}")
+            exit(1)
+        phase = get_on_chain_phase()
+        if phase != "Dealing":
+            print(f"  ERROR: expected Dealing after start_hand, got {phase}")
+            exit(1)
+        return
+    print(f"  ERROR: on-chain table is in unexpected phase {phase}; cannot request new deal safely")
+    exit(1)
+
 def do_preflop_betting():
     """Both players complete preflop betting: SB calls, BB checks."""
     print("\n=== On-Chain Betting: Preflop ===")
     phase = get_on_chain_phase()
     print(f"  Phase: {phase}")
     if phase != "Preflop":
-        print(f"  SKIP: not in Preflop phase (phase={phase})")
-        return
+        print(f"  ERROR: expected Preflop phase, got {phase}")
+        exit(1)
     # Seat 0 (player1 = SB) calls to match BB
-    stellar_player_action("player1-local", 0, PLAYER1_ADDRESS, '"Call"')
-    # Seat 1 (player2 = BB) checks
-    stellar_player_action("player2-local", 0, PLAYER2_ADDRESS, '"Check"')
+    if not stellar_player_action("player1-local", TABLE_ID, PLAYER1_ADDRESS, '"Call"'):
+        exit(1)
+    phase = get_on_chain_phase()
+    # In heads-up with current contract logic, this may already advance the phase.
+    if phase == "Preflop":
+        if not stellar_player_action("player2-local", TABLE_ID, PLAYER2_ADDRESS, '"Check"'):
+            exit(1)
+        phase = get_on_chain_phase()
     phase = get_on_chain_phase()
     print(f"  Phase after betting: {phase}")
 
@@ -152,11 +189,16 @@ def do_postflop_betting(round_name: str):
     print(f"  Phase: {phase}")
     expected = round_name  # "Flop", "Turn", or "River"
     if phase != expected:
-        print(f"  SKIP: not in {expected} phase (phase={phase})")
-        return
+        print(f"  ERROR: expected {expected} phase, got {phase}")
+        exit(1)
     # Post-flop: seat (dealer+1)%2 = 0 acts first
-    stellar_player_action("player1-local", 0, PLAYER1_ADDRESS, '"Check"')
-    stellar_player_action("player2-local", 0, PLAYER2_ADDRESS, '"Check"')
+    if not stellar_player_action("player1-local", TABLE_ID, PLAYER1_ADDRESS, '"Check"'):
+        exit(1)
+    phase = get_on_chain_phase()
+    if phase == expected:
+        if not stellar_player_action("player2-local", TABLE_ID, PLAYER2_ADDRESS, '"Check"'):
+            exit(1)
+        phase = get_on_chain_phase()
     phase = get_on_chain_phase()
     print(f"  Phase after betting: {phase}")
 
@@ -197,6 +239,9 @@ print(f"  {r.status_code}: {r.json()}")
 if ON_CHAIN:
     phase = get_on_chain_phase()
     print(f"\n=== On-Chain Table Phase: {phase} ===")
+    ensure_on_chain_ready_for_deal()
+    phase = get_on_chain_phase()
+    print(f"=== On-Chain Table Ready Phase: {phase} ===")
 
 # --- Step 2: Request Deal ---
 print("\n=== Request Deal (table {}, 2 players) ===".format(TABLE_ID))
@@ -314,5 +359,8 @@ else:
 if ON_CHAIN:
     phase = get_on_chain_phase()
     print(f"\n=== Final On-Chain Phase: {phase} ===")
+    if phase != "Settlement":
+        print("ERROR: flow finished but on-chain phase is not Settlement")
+        exit(1)
 
 print("\n=== FULL FLOW COMPLETE ===")

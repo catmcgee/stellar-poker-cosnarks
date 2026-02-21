@@ -11,10 +11,9 @@ export function PixelWorld({ children }: { children: React.ReactNode }) {
       background: 'linear-gradient(180deg, #4a90d9 0%, #6bb3e0 40%, #87ceeb 70%, #a8dcf0 100%)'
     }}>
       {/* Sun */}
-      <div className="absolute top-8 right-16 w-16 h-16 z-0" style={{
+      <div className="absolute top-8 right-16 w-16 h-16 z-0 rounded-full" style={{
         background: '#f1c40f',
         boxShadow: '0 0 40px 15px rgba(241,196,15,0.3), 0 0 80px 30px rgba(241,196,15,0.15)',
-        imageRendering: 'pixelated',
       }} />
 
       {/* Clouds layer */}

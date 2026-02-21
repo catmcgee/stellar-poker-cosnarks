@@ -19,7 +19,7 @@ pub struct SorobanConfig {
     pub secret_key: String,
     pub poker_table_contract: String,
     pub network_passphrase: String,
-    pub onchain_table_id: u32,
+    pub onchain_table_id: Option<u32>,
 }
 
 impl SorobanConfig {
@@ -35,8 +35,9 @@ impl SorobanConfig {
                 .unwrap_or_else(|_| "Test SDF Network ; September 2015".to_string()),
             onchain_table_id: std::env::var("ONCHAIN_TABLE_ID")
                 .ok()
+                .or_else(|| std::env::var("TABLE_ID").ok())
                 .and_then(|s| s.parse().ok())
-                .unwrap_or(0),
+                ,
         }
     }
 
@@ -54,6 +55,70 @@ impl SorobanConfig {
     }
 }
 
+const INSTRUCTION_LEEWAY_STEPS: [u64; 4] = [0, 50_000_000, 200_000_000, 500_000_000];
+
+async fn invoke_contract_with_retries(
+    config: &SorobanConfig,
+    contract_args: Vec<String>,
+) -> Result<std::process::Output, String> {
+    let mut last_output: Option<std::process::Output> = None;
+
+    for (attempt_idx, leeway) in INSTRUCTION_LEEWAY_STEPS.iter().enumerate() {
+        let mut args: Vec<String> = vec![
+            "contract".to_string(),
+            "invoke".to_string(),
+            "--id".to_string(),
+            config.poker_table_contract.clone(),
+            "--source".to_string(),
+            config.secret_key.clone(),
+            "--rpc-url".to_string(),
+            config.rpc_url.clone(),
+            "--network-passphrase".to_string(),
+            config.network_passphrase.clone(),
+        ];
+
+        if *leeway > 0 {
+            args.push("--instruction-leeway".to_string());
+            args.push(leeway.to_string());
+        }
+
+        args.push("--".to_string());
+        args.extend(contract_args.iter().cloned());
+
+        let output = Command::new("stellar")
+            .args(&args)
+            .output()
+            .await
+            .map_err(|e| format!("Failed to invoke stellar CLI: {}", e))?;
+
+        if output.status.success() {
+            return Ok(output);
+        }
+
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let is_resource_limit = stderr.contains("ResourceLimitExceeded");
+        let has_next_attempt = attempt_idx + 1 < INSTRUCTION_LEEWAY_STEPS.len();
+
+        if is_resource_limit && has_next_attempt {
+            tracing::warn!(
+                "stellar invoke hit ResourceLimitExceeded; retrying with higher instruction leeway (attempt {}/{})",
+                attempt_idx + 1,
+                INSTRUCTION_LEEWAY_STEPS.len()
+            );
+            last_output = Some(output);
+            continue;
+        }
+
+        return Ok(output);
+    }
+
+    last_output.ok_or_else(|| "stellar invoke failed before any attempt completed".to_string())
+}
+
+fn resolve_onchain_table_id(config: &SorobanConfig, table_id: u32) -> u32 {
+    config.onchain_table_id.unwrap_or(table_id)
+}
+
 /// Submit a deal proof to the on-chain poker-table contract via `commit_deal`.
 pub async fn submit_deal_proof(
     config: &SorobanConfig,
@@ -68,6 +133,7 @@ pub async fn submit_deal_proof(
         return Ok(String::new());
     }
 
+    let onchain_table_id = resolve_onchain_table_id(config, table_id);
     let committee_addr = config.committee_address()?;
     let converted_proof = convert_keccak_proof_to_soroban(proof)?;
     let proof_hex = hex::encode(&converted_proof);
@@ -85,40 +151,27 @@ pub async fn submit_deal_proof(
         commitments_hex_json,
     );
 
-    let output = Command::new("stellar")
-        .args([
-            "contract",
-            "invoke",
-            "--id",
-            &config.poker_table_contract,
-            "--source",
-            &config.secret_key,
-            "--rpc-url",
-            &config.rpc_url,
-            "--network-passphrase",
-            &config.network_passphrase,
-            "--instructions",
-            "500000000",
-            "--",
-            "commit_deal",
-            "--table_id",
-            &config.onchain_table_id.to_string(),
-            "--committee",
-            &committee_addr,
-            "--deck_root",
-            &deck_root_hex,
-            "--hand_commitments",
-            &commitments_hex_json,
-            "--dealt_indices",
-            "[]",
-            "--proof",
-            &proof_hex,
-            "--public_inputs",
-            &pi_hex,
-        ])
-        .output()
-        .await
-        .map_err(|e| format!("Failed to invoke stellar CLI: {}", e))?;
+    let output = invoke_contract_with_retries(
+        config,
+        vec![
+            "commit_deal".to_string(),
+            "--table_id".to_string(),
+            onchain_table_id.to_string(),
+            "--committee".to_string(),
+            committee_addr,
+            "--deck_root".to_string(),
+            deck_root_hex,
+            "--hand_commitments".to_string(),
+            commitments_hex_json,
+            "--dealt_indices".to_string(),
+            "[]".to_string(),
+            "--proof".to_string(),
+            proof_hex,
+            "--public_inputs".to_string(),
+            pi_hex,
+        ],
+    )
+    .await?;
 
     parse_tx_result(output)
 }
@@ -137,6 +190,7 @@ pub async fn submit_reveal_proof(
         return Ok(String::new());
     }
 
+    let onchain_table_id = resolve_onchain_table_id(config, table_id);
     let committee_addr = config.committee_address()?;
     let converted_proof = convert_keccak_proof_to_soroban(proof)?;
     let proof_hex = hex::encode(&converted_proof);
@@ -146,38 +200,25 @@ pub async fn submit_reveal_proof(
     let indices_json = serde_json::to_string(indices)
         .map_err(|e| format!("Failed to serialize indices: {}", e))?;
 
-    let output = Command::new("stellar")
-        .args([
-            "contract",
-            "invoke",
-            "--id",
-            &config.poker_table_contract,
-            "--source",
-            &config.secret_key,
-            "--rpc-url",
-            &config.rpc_url,
-            "--network-passphrase",
-            &config.network_passphrase,
-            "--instructions",
-            "500000000",
-            "--",
-            "reveal_board",
-            "--table_id",
-            &config.onchain_table_id.to_string(),
-            "--committee",
-            &committee_addr,
-            "--cards",
-            &cards_json,
-            "--indices",
-            &indices_json,
-            "--proof",
-            &proof_hex,
-            "--public_inputs",
-            &pi_hex,
-        ])
-        .output()
-        .await
-        .map_err(|e| format!("Failed to invoke stellar CLI: {}", e))?;
+    let output = invoke_contract_with_retries(
+        config,
+        vec![
+            "reveal_board".to_string(),
+            "--table_id".to_string(),
+            onchain_table_id.to_string(),
+            "--committee".to_string(),
+            committee_addr,
+            "--cards".to_string(),
+            cards_json,
+            "--indices".to_string(),
+            indices_json,
+            "--proof".to_string(),
+            proof_hex,
+            "--public_inputs".to_string(),
+            pi_hex,
+        ],
+    )
+    .await?;
 
     parse_tx_result(output)
 }
@@ -195,6 +236,7 @@ pub async fn submit_showdown_proof(
         return Ok(String::new());
     }
 
+    let onchain_table_id = resolve_onchain_table_id(config, table_id);
     let committee_addr = config.committee_address()?;
     let converted_proof = convert_keccak_proof_to_soroban(proof)?;
     let proof_hex = hex::encode(&converted_proof);
@@ -202,38 +244,25 @@ pub async fn submit_showdown_proof(
     let hole_cards_json = serde_json::to_string(hole_cards)
         .map_err(|e| format!("Failed to serialize hole cards: {}", e))?;
 
-    let output = Command::new("stellar")
-        .args([
-            "contract",
-            "invoke",
-            "--id",
-            &config.poker_table_contract,
-            "--source",
-            &config.secret_key,
-            "--rpc-url",
-            &config.rpc_url,
-            "--network-passphrase",
-            &config.network_passphrase,
-            "--instructions",
-            "500000000",
-            "--",
-            "submit_showdown",
-            "--table_id",
-            &config.onchain_table_id.to_string(),
-            "--committee",
-            &committee_addr,
-            "--hole_cards",
-            &hole_cards_json,
-            "--salts",
-            "[]",
-            "--proof",
-            &proof_hex,
-            "--public_inputs",
-            &pi_hex,
-        ])
-        .output()
-        .await
-        .map_err(|e| format!("Failed to invoke stellar CLI: {}", e))?;
+    let output = invoke_contract_with_retries(
+        config,
+        vec![
+            "submit_showdown".to_string(),
+            "--table_id".to_string(),
+            onchain_table_id.to_string(),
+            "--committee".to_string(),
+            committee_addr,
+            "--hole_cards".to_string(),
+            hole_cards_json,
+            "--salts".to_string(),
+            "[]".to_string(),
+            "--proof".to_string(),
+            proof_hex,
+            "--public_inputs".to_string(),
+            pi_hex,
+        ],
+    )
+    .await?;
 
     parse_tx_result(output)
 }
@@ -247,6 +276,7 @@ pub async fn get_table_state(
         return Err("Soroban not configured".to_string());
     }
 
+    let onchain_table_id = resolve_onchain_table_id(config, table_id);
     let output = Command::new("stellar")
         .args([
             "contract",
@@ -262,7 +292,7 @@ pub async fn get_table_state(
             "--",
             "get_table",
             "--table_id",
-            &config.onchain_table_id.to_string(),
+            &onchain_table_id.to_string(),
         ])
         .output()
         .await

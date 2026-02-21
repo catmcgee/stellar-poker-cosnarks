@@ -1,7 +1,9 @@
 "use client";
 
 import { useState, useEffect, useCallback } from "react";
+import Link from "next/link";
 import { Board } from "./Board";
+import { Card } from "./Card";
 import { PlayerSeat } from "./PlayerSeat";
 import { ActionPanel } from "./ActionPanel";
 import { PixelWorld } from "./PixelWorld";
@@ -258,7 +260,19 @@ export function Table({ tableId }: TableProps) {
 
         {/* Header bar */}
         <div className="w-full max-w-3xl flex items-center justify-between">
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-3">
+            <Link
+              href="/"
+              className="text-[14px]"
+              style={{
+                color: '#f5e6c8',
+                textShadow: '2px 2px 0 #2c3e50',
+                textDecoration: 'none',
+                fontFamily: "'Press Start 2P', monospace",
+              }}
+            >
+              ←
+            </Link>
             <PixelHeart size={3} beating />
             <h1 className="text-[10px]" style={{
               color: 'white',
@@ -356,7 +370,7 @@ export function Table({ tableId }: TableProps) {
             }} />
 
             {/* Opponent seats (top) */}
-            <div className="flex gap-4 -mt-2">
+            <div className="flex gap-6 -mt-2">
               {game.players
                 .filter((p) => !userAddress || p.address !== userAddress)
                 .map((player) => (
@@ -368,6 +382,36 @@ export function Table({ tableId }: TableProps) {
                     isUser={false}
                   />
                 ))}
+              {/* Placeholder cat seats when no opponents have joined */}
+              {game.players.filter((p) => !userAddress || p.address !== userAddress).length === 0 && (
+                <>
+                  {([
+                    { variant: "grey" as const, flipped: false },
+                    { variant: "orange" as const, flipped: false },
+                    { variant: "black" as const, flipped: true },
+                  ]).map((seat, i) => (
+                    <div key={i} className="flex flex-col items-center gap-2" style={{ opacity: 0.3 }}>
+                      <PixelCat variant={seat.variant} size={5} flipped={seat.flipped} />
+                      <div className="flex gap-1">
+                        <Card faceDown size="sm" />
+                        <Card faceDown size="sm" />
+                      </div>
+                      <div className="text-[6px]" style={{
+                        color: '#95a5a6',
+                        textShadow: '1px 1px 0 rgba(0,0,0,0.4)',
+                      }}>EMPTY SEAT</div>
+                    </div>
+                  ))}
+                </>
+              )}
+            </div>
+
+            {/* Player count */}
+            <div className="text-[7px] -mt-1 mb-1" style={{
+              color: '#95a5a6',
+              textShadow: '1px 1px 0 rgba(0,0,0,0.3)',
+            }}>
+              {game.players.length} / 4 PLAYERS AT TABLE
             </div>
 
             {/* Board */}

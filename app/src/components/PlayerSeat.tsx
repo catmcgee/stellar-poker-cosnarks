@@ -74,7 +74,7 @@ export function PlayerSeat({
         <div className="flex-shrink-0">
           <PixelCat
             variant={catConfig.variant}
-            size={isUser ? 4 : 3}
+            size={isUser ? 5 : 4}
             flipped={catConfig.flipped}
           />
         </div>
