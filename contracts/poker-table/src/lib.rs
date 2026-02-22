@@ -14,14 +14,37 @@ mod verifier;
 
 use types::*;
 
+/// TTL for table storage (30 days in ledgers, ~5 seconds per ledger)
+const TABLE_TTL_THRESHOLD: u32 = 17_280; // ~1 day — trigger extension when below this
+const TABLE_TTL_EXTEND: u32 = 518_400; // ~30 days
+
 #[contract]
 pub struct PokerTableContract;
 
 fn load_table(env: &Env, table_id: u32) -> Result<TableState, PokerTableError> {
+    let key = DataKey::Table(table_id);
+    let table: TableState = env
+        .storage()
+        .persistent()
+        .get(&key)
+        .ok_or(PokerTableError::TableNotFound)?;
+    // Extend TTL on every read to keep active tables alive
     env.storage()
         .persistent()
-        .get(&DataKey::Table(table_id))
-        .ok_or(PokerTableError::TableNotFound)
+        .extend_ttl(&key, TABLE_TTL_THRESHOLD, TABLE_TTL_EXTEND);
+    Ok(table)
+}
+
+fn save_table(env: &Env, table: &TableState) {
+    let key = DataKey::Table(table.id);
+    env.storage().persistent().set(&key, table);
+    env.storage()
+        .persistent()
+        .extend_ttl(&key, TABLE_TTL_THRESHOLD, TABLE_TTL_EXTEND);
+    // Keep instance storage alive too
+    env.storage()
+        .instance()
+        .extend_ttl(TABLE_TTL_THRESHOLD, TABLE_TTL_EXTEND);
 }
 
 fn derive_session_id(table_id: u32, hand_number: u32) -> u32 {
@@ -66,9 +89,7 @@ impl PokerTableContract {
             session_id: 0,
         };
 
-        env.storage()
-            .persistent()
-            .set(&DataKey::Table(table_id), &table);
+        save_table(&env, &table);
         env.storage()
             .instance()
             .set(&Symbol::new(&env, "next_id"), &(table_id + 1));
@@ -126,9 +147,7 @@ impl PokerTableContract {
             seat_index: seat,
         });
 
-        env.storage()
-            .persistent()
-            .set(&DataKey::Table(table_id), &table);
+        save_table(&env, &table);
 
         env.events().publish(
             (Symbol::new(&env, "player_joined"), table_id),
@@ -175,9 +194,7 @@ impl PokerTableContract {
         }
         table.players = new_players;
 
-        env.storage()
-            .persistent()
-            .set(&DataKey::Table(table_id), &table);
+        save_table(&env, &table);
 
         env.events().publish(
             (Symbol::new(&env, "player_left"), table_id),
@@ -222,9 +239,7 @@ impl PokerTableContract {
             p2.stack,
         );
 
-        env.storage()
-            .persistent()
-            .set(&DataKey::Table(table_id), &table);
+        save_table(&env, &table);
 
         env.events().publish(
             (Symbol::new(&env, "hand_started"), table_id),
@@ -278,9 +293,7 @@ impl PokerTableContract {
         }
         table.current_turn = (table.dealer_seat + 3) % num_players;
 
-        env.storage()
-            .persistent()
-            .set(&DataKey::Table(table_id), &table);
+        save_table(&env, &table);
 
         env.events().publish(
             (Symbol::new(&env, "deal_committed"), table_id),
@@ -310,9 +323,7 @@ impl PokerTableContract {
 
         betting::process_action(&env, &mut table, &player, &action)?;
 
-        env.storage()
-            .persistent()
-            .set(&DataKey::Table(table_id), &table);
+        save_table(&env, &table);
         Ok(())
     }
 
@@ -379,9 +390,7 @@ impl PokerTableContract {
         // Reset betting state for new round.
         betting::reset_round(&env, &mut table)?;
 
-        env.storage()
-            .persistent()
-            .set(&DataKey::Table(table_id), &table);
+        save_table(&env, &table);
 
         env.events()
             .publish((Symbol::new(&env, "board_revealed"), table_id), cards);
@@ -426,9 +435,7 @@ impl PokerTableContract {
         // Evaluate hands and determine winner.
         game::settle_showdown(&env, &mut table, &hole_cards)?;
 
-        env.storage()
-            .persistent()
-            .set(&DataKey::Table(table_id), &table);
+        save_table(&env, &table);
         Ok(())
     }
 
@@ -440,14 +447,49 @@ impl PokerTableContract {
 
         timeout::process_timeout(&env, &mut table, &claimer)?;
 
-        env.storage()
-            .persistent()
-            .set(&DataKey::Table(table_id), &table);
+        save_table(&env, &table);
         Ok(())
     }
 
     /// Read current table state (view function).
     pub fn get_table(env: Env, table_id: u32) -> Result<TableState, PokerTableError> {
         load_table(&env, table_id)
+    }
+
+    // ========================================================================
+    // Admin Functions (Stellar Game Studio pattern)
+    // ========================================================================
+
+    /// Get the admin address for a table.
+    pub fn get_admin(env: Env, table_id: u32) -> Result<Address, PokerTableError> {
+        let table = load_table(&env, table_id)?;
+        Ok(table.admin)
+    }
+
+    /// Get the Game Hub address for a table.
+    pub fn get_hub(env: Env, table_id: u32) -> Result<Address, PokerTableError> {
+        let table = load_table(&env, table_id)?;
+        Ok(table.config.game_hub)
+    }
+
+    /// Update the Game Hub address for a table (admin only).
+    pub fn set_hub(
+        env: Env,
+        table_id: u32,
+        new_hub: Address,
+    ) -> Result<(), PokerTableError> {
+        let mut table = load_table(&env, table_id)?;
+        table.admin.require_auth();
+        table.config.game_hub = new_hub;
+        save_table(&env, &table);
+        Ok(())
+    }
+
+    /// Upgrade the contract WASM (admin only).
+    pub fn upgrade(env: Env, table_id: u32, new_wasm_hash: BytesN<32>) -> Result<(), PokerTableError> {
+        let table = load_table(&env, table_id)?;
+        table.admin.require_auth();
+        env.deployer().update_current_contract_wasm(new_wasm_hash);
+        Ok(())
     }
 }

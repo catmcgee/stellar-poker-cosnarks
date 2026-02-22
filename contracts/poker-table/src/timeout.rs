@@ -1,6 +1,7 @@
 use soroban_sdk::{Address, Env, Symbol};
 
 use crate::game;
+use crate::game_hub;
 use crate::types::*;
 
 /// Process a timeout claim.
@@ -75,6 +76,9 @@ pub fn process_timeout(
 
             // Return all funds to players (emergency settlement)
             emergency_refund(env, table)?;
+
+            // Notify Game Hub that the game ended (player1_won = true as default for dispute)
+            game_hub::notify_end(env, &table.config.game_hub, table.session_id, true);
         }
 
         _ => {
