@@ -4,21 +4,21 @@
 
 - [ ] **Convert contract panics to proper errors** — Create `#[contracterror]` enum for poker-table (like zk-verifier has). Replace all `panic!()` and `assert!()` with `Result` returns. ~15 `unwrap()` calls on storage reads in `betting.rs`, `lib.rs`, `game.rs`, `pot.rs` need error handling. Currently a bad input crashes the contract and can lock player funds.
 
-- [ ] **Remove plaintext deck from coordinator** — `api.rs` stores the full deck in `TableSession.deck_order` as plaintext. The comment says "never stored in plaintext" but it is. Must only store commitments and Merkle root on the coordinator; actual cards should only exist as secret shares on MPC nodes.
+- [x] **Remove plaintext deck from coordinator** — `TableSession` no longer has `deck_order` field. Only commitments and Merkle root are stored on the coordinator.
 
-- [ ] **Wallet integration** — Frontend hardcodes `"player_0"` / `"player_1"` (`Table.tsx:19`). Need Freighter wallet connection, real Stellar addresses, and auth signatures on API calls.
+- [x] **Wallet integration** — Freighter wallet connection implemented with real Stellar addresses and ed25519 auth signatures on all API calls.
 
-- [ ] **Input validation on coordinator API** — `request_deal()` doesn't validate table_id, player count, or game phase. `request_reveal()` accepts arbitrary phase strings. No rate limiting, no replay protection.
+- [x] **Input validation on coordinator API** — Rate limiting (per-IP/table/action), replay protection (strictly increasing nonces), signature verification (ed25519 + SEP-53), and phase/player validation all implemented.
 
 - [ ] **Soroban submission atomicity** — If on-chain submission fails, the coordinator still saves the session and returns success. Need either: fail the request, implement rollback, or add a retry queue with reconciliation.
 
-- [ ] **Mock verifier in production path** — `verifier.rs` has a `#[contractimpl]` that always returns `Ok(true)`. This is fine for tests but the mock contract impl ships in the WASM. Gate it behind `#[cfg(test)]` or move to a separate test module.
+- [x] **Mock verifier in production path** — Already gated behind `#[cfg(test)]`.
 
 ## Important
 
 - [ ] **Integration tests** — No E2E test for the full flow: create table -> deal -> bet -> reveal -> showdown -> settlement. No test that real proofs pass the zk-verifier. No multi-node MPC coordination test.
 
-- [ ] **`.env.example`** — Document all required env vars: `MPC_NODE_0-2`, `COMMITTEE_SECRET`, `SOROBAN_RPC`, `POKER_TABLE_CONTRACT`, `NETWORK_PASSPHRASE`, `CIRCUIT_DIR`, `NEXT_PUBLIC_COORDINATOR_URL`.
+- [x] **`.env.example`** — Created with all required env vars documented.
 
 - [ ] **Admin emergency pause** — No way to pause a table if a bug is found. Add `pause_table(admin)` that freezes all actions and `unpause_table(admin)`.
 
@@ -42,7 +42,7 @@
 
 ## Nice to Have
 
-- [ ] **Rate limiting** — No per-table or per-IP rate limits on coordinator API. Add tower middleware.
+- [x] **Rate limiting** — Per-IP/table/action rate limiting implemented in coordinator (60 req/min per bucket).
 
 - [ ] **Audit logging** — No persistent record of game actions, proofs submitted, or tx hashes. Add event log for dispute resolution.
 

@@ -12,12 +12,13 @@ import { PixelChip } from "./PixelChip";
 import type { GameState, GamePhase } from "@/lib/game-state";
 import { createInitialState } from "@/lib/game-state";
 import * as api from "@/lib/api";
-import { joinTableOnChain, playerActionOnChain } from "@/lib/onchain";
 import {
   trySilentReconnect,
   type WalletSession,
 } from "@/lib/freighter";
 import { GameBoyButton, GameBoyModal } from "./GameBoyModal";
+import { usePokerActions } from "@/lib/use-poker-actions";
+import { getDealerLine } from "@/lib/dealer-lines";
 
 type ActiveRequest = "deal" | "flop" | "turn" | "river" | "showdown" | null;
 type PlayMode = "single" | "headsup" | "multi";
@@ -35,32 +36,11 @@ function shortAddress(address: string): string {
   return `${address.slice(0, 6)}...${address.slice(-6)}`;
 }
 
-function normalizeTxHash(hash: string | null | undefined): string | undefined {
-  if (!hash) return undefined;
-  if (hash === "null" || hash === "submitted") return undefined;
-  return hash;
-}
-
 function toNumber(value: unknown, fallback: number): number {
   if (typeof value === "number" && Number.isFinite(value)) return value;
   if (typeof value === "string") {
     const parsed = Number(value);
     if (Number.isFinite(parsed)) return parsed;
-  }
-  return fallback;
-}
-
-function toBigInt(value: unknown, fallback: bigint): bigint {
-  if (typeof value === "bigint") return value;
-  if (typeof value === "number" && Number.isFinite(value)) {
-    return BigInt(Math.trunc(value));
-  }
-  if (typeof value === "string" && value.trim().length > 0) {
-    try {
-      return BigInt(value.trim());
-    } catch {
-      return fallback;
-    }
   }
   return fallback;
 }
@@ -92,15 +72,6 @@ function mapOnChainPhase(phase: string): GamePhase | null {
     default:
       return null;
   }
-}
-
-function deterministicPercent(seed: string): number {
-  let hash = 2166136261;
-  for (let i = 0; i < seed.length; i += 1) {
-    hash ^= seed.charCodeAt(i);
-    hash = Math.imul(hash, 16777619);
-  }
-  return (hash >>> 0) % 100;
 }
 
 export function Table({ tableId, initialPlayMode }: TableProps) {
@@ -140,9 +111,6 @@ export function Table({ tableId, initialPlayMode }: TableProps) {
     seatedAddresses.length > 0
       ? seatedAddresses.map(shortAddress).join(" vs ")
       : "NO SEATS YET";
-  const claimedWallets = (lobby?.seats ?? [])
-    .map((seat) => seat.wallet_address)
-    .filter((address): address is string => !!address);
 
   const syncOnChainState = useCallback(async () => {
     try {
@@ -263,6 +231,28 @@ export function Table({ tableId, initialPlayMode }: TableProps) {
     [tableId]
   );
 
+  const {
+    handleJoinTable,
+    handleReveal,
+    handleShowdown,
+    handleAction,
+  } = usePokerActions({
+    tableId,
+    wallet,
+    playMode,
+    game,
+    lobby,
+    setGame,
+    setError,
+    setLoading,
+    setActiveRequest,
+    setWinnerAddress,
+    setBotLine,
+    setJoiningTable,
+    syncOnChainState,
+    hydrateMyCards,
+  });
+
   useEffect(() => {
     void syncOnChainState();
     const interval = setInterval(() => {
@@ -307,427 +297,6 @@ export function Table({ tableId, initialPlayMode }: TableProps) {
       setElapsed(0);
     }
   }, [loading]);
-
-  const handleJoinTable = useCallback(async () => {
-    if (!wallet) {
-      setError("Connect Freighter wallet before joining a table");
-      return;
-    }
-    setJoiningTable(true);
-    setError(null);
-    try {
-      const tableState = await api.getParsedTableState(tableId);
-      const minBuyInRaw =
-        tableState.parsed &&
-        typeof tableState.parsed === "object" &&
-        "config" in tableState.parsed
-          ? (tableState.parsed.config as { min_buy_in?: unknown })?.min_buy_in
-          : undefined;
-      const buyIn = toBigInt(minBuyInRaw, BigInt("1000000000"));
-
-      await joinTableOnChain(wallet, tableId, buyIn);
-      await syncOnChainState();
-      await hydrateMyCards(wallet);
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "Join table failed");
-    } finally {
-      setJoiningTable(false);
-    }
-  }, [hydrateMyCards, syncOnChainState, tableId, wallet]);
-
-  const resolvePlayersForDeal = useCallback((): string[] | null => {
-    if (!wallet) {
-      setError("Connect Freighter wallet before starting a hand");
-      return null;
-    }
-
-    if (!isStellarAddress(wallet.address)) {
-      setError("Connected wallet address is invalid");
-      return null;
-    }
-
-    if (!claimedWallets.includes(wallet.address)) {
-      setError("Join table first so your wallet is seated");
-      return null;
-    }
-
-    const joinedWallets = lobby?.joined_wallets ?? claimedWallets.length;
-    if (playMode === "headsup" && joinedWallets < 2) {
-      setError("Two-player mode needs 2 joined wallets");
-      return null;
-    }
-    if (playMode === "multi" && joinedWallets < 3) {
-      setError("3-6 player mode needs at least 3 joined wallets");
-      return null;
-    }
-
-    // Empty list tells coordinator to resolve all on-chain seats from lobby.
-    return [];
-  }, [wallet, claimedWallets, lobby, playMode]);
-
-  const handleDeal = useCallback(
-    async (players: string[]) => {
-      if (!wallet) {
-        setError("Connect Freighter wallet before dealing");
-        return;
-      }
-
-      setLoading(true);
-      setActiveRequest("deal");
-      setError(null);
-      setWinnerAddress(null);
-
-      try {
-        const result = await api.requestDeal(tableId, players, wallet);
-        const txHash = normalizeTxHash(result.tx_hash);
-
-        setGame((prev) => ({
-          ...prev,
-          phase: "preflop",
-          boardCards: [],
-          handNumber: prev.handNumber + 1,
-          pot: playMode === "single" ? 0 : prev.pot,
-          lastTxHash: txHash,
-          proofSize: result.proof_size,
-          onChainConfirmed: !!txHash,
-          players: playMode === "single"
-            ? prev.players.map((p) => ({
-                ...p,
-                stack: 100,
-                betThisRound: 0,
-                folded: false,
-                allIn: false,
-              }))
-            : players.length > 0
-              ? players.map((address, seat) => ({
-                  address,
-                  seat,
-                  stack: 10000,
-                  betThisRound: 0,
-                  folded: false,
-                  allIn: false,
-                }))
-              : prev.players,
-        }));
-
-        await hydrateMyCards(wallet);
-        await syncOnChainState();
-      } catch (e) {
-        setError(e instanceof Error ? e.message : "Deal failed");
-      } finally {
-        setLoading(false);
-        setActiveRequest(null);
-      }
-    },
-    [hydrateMyCards, playMode, syncOnChainState, tableId, wallet]
-  );
-
-  const handleReveal = useCallback(
-    async (phase: "flop" | "turn" | "river") => {
-      if (!wallet) {
-        setError("Connect Freighter wallet before requesting reveal");
-        return;
-      }
-
-      setLoading(true);
-      setActiveRequest(phase);
-      setError(null);
-      try {
-        const result = await api.requestReveal(tableId, phase, wallet);
-        const txHash = normalizeTxHash(result.tx_hash);
-        setGame((prev) => ({
-          ...prev,
-          phase,
-          boardCards: [...prev.boardCards, ...result.cards],
-          lastTxHash: txHash ?? prev.lastTxHash,
-          proofSize: result.proof_size,
-          onChainConfirmed: !!txHash || prev.onChainConfirmed,
-        }));
-        await syncOnChainState();
-      } catch (e) {
-        setError(e instanceof Error ? e.message : "Reveal failed");
-        autoStreetRef.current = "";
-      } finally {
-        setLoading(false);
-        setActiveRequest(null);
-      }
-    },
-    [playMode, syncOnChainState, tableId, wallet]
-  );
-
-  const handleShowdown = useCallback(async () => {
-    if (!wallet) {
-      setError("Connect Freighter wallet before requesting showdown");
-      return;
-    }
-
-    setLoading(true);
-    setActiveRequest("showdown");
-    setError(null);
-    try {
-      const result = await api.requestShowdown(tableId, wallet);
-      const txHash = normalizeTxHash(result.tx_hash);
-
-      // Map the winner's chain address to a wallet address via the lobby
-      let resolvedWinner = result.winner;
-      if (lobby?.seats) {
-        for (const seat of lobby.seats) {
-          if (seat.chain_address === result.winner && seat.wallet_address) {
-            resolvedWinner = seat.wallet_address;
-            break;
-          }
-        }
-      }
-      // Also check if the winner_index maps to a known player in our game state
-      if (resolvedWinner === result.winner) {
-        // Chain address didn't match any lobby wallet — try matching by seat index
-        const playerByIndex = game.players[result.winner_index];
-        if (playerByIndex && isStellarAddress(playerByIndex.address)) {
-          resolvedWinner = playerByIndex.address;
-        }
-      }
-      setWinnerAddress(resolvedWinner);
-
-      setGame((prev) => ({
-        ...prev,
-        phase: "settlement",
-        lastTxHash: txHash ?? prev.lastTxHash,
-        proofSize: result.proof_size,
-        onChainConfirmed: !!txHash || prev.onChainConfirmed,
-      }));
-      await syncOnChainState();
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "Showdown failed");
-      autoStreetRef.current = "";
-    } finally {
-      setLoading(false);
-      setActiveRequest(null);
-    }
-  }, [game.players, lobby, playMode, syncOnChainState, tableId, wallet]);
-
-  const handleAction = useCallback(
-    async (action: string, amount?: number) => {
-      if (action === "showdown") {
-        if (!wallet) {
-          setError("Connect Freighter wallet before requesting showdown");
-          return;
-        }
-        await handleShowdown();
-        return;
-      }
-
-      const bettingActions = ["fold", "check", "call", "bet", "raise", "allin"];
-      if (bettingActions.includes(action)) {
-        if (playMode === "single") {
-          if (!wallet) {
-            setError("Connect Freighter wallet before betting");
-            return;
-          }
-
-          const me = game.players.find((p) => p.address === wallet.address);
-          const bot = game.players.find((p) => p.address !== wallet.address);
-          if (!me || !bot) {
-            setError("Waiting for solo seats to initialize");
-            return;
-          }
-
-          if (action === "fold") {
-            setWinnerAddress(bot.address);
-            setGame((prev) => ({
-              ...prev,
-              phase: "settlement",
-              players: prev.players.map((p) =>
-                p.address === me.address ? { ...p, folded: true } : p
-              ),
-            }));
-            return;
-          }
-
-          let userBet = me.betThisRound;
-          let botBet = bot.betThisRound;
-          let userStack = me.stack;
-          let botStack = bot.stack;
-          const botStackBefore = botStack;
-          let pot = game.pot;
-          const current = Math.max(userBet, botBet);
-          let userContribution = 0;
-
-          if (action === "call" || action === "check") {
-            const callAmount = Math.max(current - userBet, 0);
-            userContribution = Math.min(callAmount, userStack);
-            userBet += userContribution;
-            userStack -= userContribution;
-          } else if (action === "allin") {
-            userContribution = userStack;
-            userBet += userContribution;
-            userStack = 0;
-          } else if (action === "bet" || action === "raise") {
-            const normalizedAmount =
-              typeof amount === "number" && Number.isFinite(amount)
-                ? Math.max(1, Math.floor(amount))
-                : 1;
-            const targetBet = Math.max(current, normalizedAmount);
-            userContribution = Math.max(0, Math.min(targetBet - userBet, userStack));
-            userBet += userContribution;
-            userStack -= userContribution;
-          }
-
-          let botContribution = 0;
-          const neededByBot = Math.max(userBet - botBet, 0);
-          let aiAction: "check" | "call" | "fold";
-          if (neededByBot === 0) {
-            aiAction = "check";
-          } else {
-            const pressure = neededByBot / Math.max(1, botStack + pot);
-            const roll = deterministicPercent(
-              `${tableId}:${game.handNumber}:${game.phase}:${game.boardCards.join(",")}:${neededByBot}:${botStack}`
-            );
-            if (
-              (pressure > 0.7 && roll < 85) ||
-              (pressure > 0.45 && roll < 55) ||
-              (pressure > 0.25 && roll < 25)
-            ) {
-              aiAction = "fold";
-            } else {
-              aiAction = "call";
-            }
-          }
-
-          if (aiAction === "call" && neededByBot > 0) {
-            botContribution = Math.min(neededByBot, botStack);
-            botBet += botContribution;
-            botStack -= botContribution;
-          }
-
-          pot += userContribution + botContribution;
-          if (aiAction === "fold") {
-            setWinnerAddress(me.address);
-            setBotLine("AI folds. You win the pot.");
-            setGame((prev) => ({
-              ...prev,
-              phase: "settlement",
-              pot,
-              players: prev.players.map((p) => {
-                if (p.address === me.address) {
-                  return {
-                    ...p,
-                    stack: userStack,
-                    betThisRound: 0,
-                    allIn: userStack <= 0,
-                  };
-                }
-                if (p.address === bot.address) {
-                  return {
-                    ...p,
-                    stack: botStack,
-                    betThisRound: 0,
-                    folded: true,
-                    allIn: botStack <= 0,
-                  };
-                }
-                return p;
-              }),
-            }));
-            return;
-          }
-
-          const aiLine =
-            aiAction === "check"
-              ? "AI checks."
-              : botContribution >= botStackBefore
-                ? "AI calls all-in."
-                : "AI calls.";
-          setGame((prev) => ({
-            ...prev,
-            pot,
-            players: prev.players.map((p) => {
-              if (p.address === me.address) {
-                return {
-                  ...p,
-                  stack: userStack,
-                  betThisRound: 0,
-                  allIn: userStack <= 0,
-                };
-              }
-              if (p.address === bot.address) {
-                return {
-                  ...p,
-                  stack: botStack,
-                  betThisRound: 0,
-                  allIn: botStack <= 0,
-                };
-              }
-              return p;
-            }),
-          }));
-
-          const step = game.phase;
-          if (step === "preflop") {
-            setBotLine(`${aiLine} Dealer reveals the flop...`);
-            void handleReveal("flop");
-          } else if (step === "flop") {
-            setBotLine(`${aiLine} Dealer reveals the turn...`);
-            void handleReveal("turn");
-          } else if (step === "turn") {
-            setBotLine(`${aiLine} Dealer reveals the river...`);
-            void handleReveal("river");
-          } else if (step === "river") {
-            setBotLine(`${aiLine} Dealer runs showdown...`);
-            void handleShowdown();
-          }
-          return;
-        }
-        if (!wallet) {
-          setError("Connect Freighter wallet before betting");
-          return;
-        }
-        setLoading(true);
-        setError(null);
-        try {
-          const normalizedAmount =
-            typeof amount === "number" && Number.isFinite(amount)
-              ? Math.max(1, Math.floor(amount))
-              : undefined;
-          await playerActionOnChain(
-            wallet,
-            tableId,
-            action as "fold" | "check" | "call" | "bet" | "raise" | "allin",
-            normalizedAmount
-          );
-          await syncOnChainState();
-        } catch (e) {
-          setError(e instanceof Error ? e.message : "Bet action failed");
-        } finally {
-          setLoading(false);
-        }
-        return;
-      }
-
-      if (action !== "start") {
-        setError("Use the betting controls on the table.");
-        return;
-      }
-
-      const players = resolvePlayersForDeal();
-      if (!players) {
-        return;
-      }
-      await handleDeal(players);
-    },
-    [
-      game.phase,
-      game.players,
-      game.pot,
-      wallet,
-      playMode,
-      syncOnChainState,
-      tableId,
-      resolvePlayersForDeal,
-      handleDeal,
-      handleReveal,
-      handleShowdown,
-    ]
-  );
 
   const currentBet = Math.max(...game.players.map((p) => p.betThisRound), 0);
   const displayCurrentBet = currentBet;
@@ -781,94 +350,22 @@ export function Table({ tableId, initialPlayMode }: TableProps) {
     void next();
   }, [game.handNumber, handleReveal, handleShowdown, loading, onChainPhase, wallet]);
 
-  const formatElapsed = (s: number) => {
-    const m = Math.floor(s / 60);
-    const sec = s % 60;
-    return m > 0 ? `${m}m ${sec}s` : `${sec}s`;
-  };
-
-  const dealerLine = (() => {
-    if (loading) {
-      const timer = ` [${formatElapsed(elapsed)}]`;
-      switch (activeRequest) {
-        case "deal":
-          return `SHUFFLING & GENERATING DEAL PROOF... (~30-60s)${timer}`;
-        case "flop":
-          return `GENERATING REVEAL PROOF... (~20-40s)${timer}`;
-        case "turn":
-          return `GENERATING REVEAL PROOF... (~20-40s)${timer}`;
-        case "river":
-          return `GENERATING REVEAL PROOF... (~20-40s)${timer}`;
-        case "showdown":
-          return `VERIFYING SHOWDOWN — THIS TAKES 2-4 MINUTES. PLEASE WAIT.${timer}`;
-        default:
-          return `One moment...${timer}`;
-      }
-    }
-
-    if (playMode === "single" && botLine && game.phase !== "waiting") {
-      return `${botLine}`;
-    }
-
-    if (onChainPhase === "DealingFlop") {
-      return "Betting round complete. Dealer is revealing the flop...";
-    }
-    if (onChainPhase === "DealingTurn") {
-      return "Betting round complete. Dealer is revealing the turn...";
-    }
-    if (onChainPhase === "DealingRiver") {
-      return "Betting round complete. Dealer is revealing the river...";
-    }
-    if (onChainPhase === "Showdown") {
-      return "Betting complete. Dealer is resolving showdown...";
-    }
-
-    if (playMode !== "single" && wallet && !isWalletSeated && seatedAddresses.length > 0) {
-      return `On-chain seats are ${tableSeatLabel}. Click JOIN TABLE to take a seat with this wallet.`;
-    }
-
-    switch (game.phase) {
-      case "waiting":
-        if (playMode === "single") {
-          return "Solo vs AI uses fake chips (100 each). Click DEAL CARDS to start.";
-        }
-        if (playMode === "headsup") {
-          if ((lobby?.joined_wallets ?? 0) < 2) {
-            return "Two-player mode needs 2 joined wallets. Share table ID and wait for one join.";
-          }
-          return "Heads-up is ready. Click DEAL CARDS.";
-        }
-        if ((lobby?.joined_wallets ?? 0) < 3) {
-          return "3-6 player mode needs at least 3 joined wallets.";
-        }
-        return "Multi-player table is ready. Click DEAL CARDS.";
-      case "dealing":
-        return "Cards are being dealt.";
-      case "preflop":
-        return "Preflop is live. Place your bet; dealer auto-reveals next street.";
-      case "flop":
-        return "Flop is out. Place your bet; dealer auto-reveals turn.";
-      case "turn":
-        return "Turn is out. Place your bet; dealer auto-reveals river.";
-      case "river":
-        return "River is out. Final betting round; dealer auto-runs showdown.";
-      case "showdown":
-        return "Showdown in progress.";
-      case "settlement":
-        if (winnerAddress) {
-          if (userAddress && winnerAddress === userAddress) {
-            return "Hand complete. YOU WIN!";
-          }
-          if (playMode === "single" && userAddress && winnerAddress !== userAddress) {
-            return "Hand complete. AI WINS!";
-          }
-          return `Hand complete. Winner: ${shortAddress(winnerAddress)}.`;
-        }
-        return "Hand complete. Start the next hand when ready.";
-      default:
-        return "Ready when you are.";
-    }
-  })();
+  const dealerLine = getDealerLine({
+    loading,
+    elapsed,
+    activeRequest,
+    playMode,
+    botLine,
+    onChainPhase,
+    gamePhase: game.phase,
+    wallet: !!wallet,
+    isWalletSeated,
+    seatedAddresses,
+    tableSeatLabel,
+    winnerAddress,
+    userAddress,
+    lobby,
+  });
 
   return (
     <PixelWorld>

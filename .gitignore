@@ -10,6 +10,13 @@ circuits/*/target/
 circuits/*/proofs/
 crs/
 
+# OS files
+.DS_Store
+**/.DS_Store
+
+# Logs
+*.log
+
 # Local temporary tool/cache artifacts
 .tmp*
 **/.tmp*

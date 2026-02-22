@@ -42,31 +42,29 @@ struct NodePreparedSharesResponse {
     share_set_id: String,
 }
 
-/// Ask all nodes to prepare deal share sets.
-pub async fn prepare_deal_from_nodes(
+/// Generic helper: POST a JSON body to each MPC node's URL and collect share set IDs.
+async fn prepare_from_nodes(
     node_endpoints: &[String],
-    circuit_dir: &str,
+    url_builder: impl Fn(&str, u32) -> String,
     table_id: u32,
-    players: &[String],
+    body: serde_json::Value,
+    operation_name: &str,
 ) -> Result<PreparedShareSets, String> {
     let client = reqwest::Client::new();
     let mut handles = Vec::with_capacity(node_endpoints.len());
 
     for (idx, endpoint) in node_endpoints.iter().enumerate() {
-        let url = format!("{}/table/{}/prepare-deal", endpoint, table_id);
-        let circuit_dir = circuit_dir.to_string();
-        let players = players.to_vec();
+        let url = url_builder(endpoint, table_id);
+        let body = body.clone();
         let client = client.clone();
+        let op = operation_name.to_string();
         let handle = tokio::spawn(async move {
             let resp = client
                 .post(&url)
-                .json(&serde_json::json!({
-                    "players": players,
-                    "circuit_dir": circuit_dir,
-                }))
+                .json(&body)
                 .send()
                 .await
-                .map_err(|e| format!("failed to call node {} prepare-deal: {}", idx, e))?;
+                .map_err(|e| format!("failed to call node {} {}: {}", idx, op, e))?;
 
             if !resp.status().is_success() {
                 let status = resp.status();
@@ -75,13 +73,13 @@ pub async fn prepare_deal_from_nodes(
                     .await
                     .unwrap_or_else(|_| "unable to read response body".to_string());
                 return Err(format!(
-                    "node {} prepare-deal rejected request: HTTP {}: {}",
-                    idx, status, body
+                    "node {} {} rejected request: HTTP {}: {}",
+                    idx, op, status, body
                 ));
             }
 
             let prepared: NodePreparedSharesResponse = resp.json().await.map_err(|e| {
-                format!("failed to parse node {} prepare-deal response: {}", idx, e)
+                format!("failed to parse node {} {} response: {}", idx, op, e)
             })?;
 
             Ok::<(usize, String), String>((idx, prepared.share_set_id))
@@ -90,6 +88,26 @@ pub async fn prepare_deal_from_nodes(
     }
 
     collect_prepared_share_sets(handles, node_endpoints.len()).await
+}
+
+/// Ask all nodes to prepare deal share sets.
+pub async fn prepare_deal_from_nodes(
+    node_endpoints: &[String],
+    circuit_dir: &str,
+    table_id: u32,
+    players: &[String],
+) -> Result<PreparedShareSets, String> {
+    prepare_from_nodes(
+        node_endpoints,
+        |endpoint, tid| format!("{}/table/{}/prepare-deal", endpoint, tid),
+        table_id,
+        serde_json::json!({
+            "players": players,
+            "circuit_dir": circuit_dir,
+        }),
+        "prepare-deal",
+    )
+    .await
 }
 
 /// Ask all nodes to prepare reveal share sets.
@@ -101,52 +119,19 @@ pub async fn prepare_reveal_from_nodes(
     previously_used_indices: &[u32],
     deck_root: &str,
 ) -> Result<PreparedShareSets, String> {
-    let client = reqwest::Client::new();
-    let mut handles = Vec::with_capacity(node_endpoints.len());
-
-    for (idx, endpoint) in node_endpoints.iter().enumerate() {
-        let url = format!("{}/table/{}/prepare-reveal/{}", endpoint, table_id, phase);
-        let circuit_dir = circuit_dir.to_string();
-        let deck_root = deck_root.to_string();
-        let previously_used_indices = previously_used_indices.to_vec();
-        let client = client.clone();
-        let handle = tokio::spawn(async move {
-            let resp = client
-                .post(&url)
-                .json(&serde_json::json!({
-                    "circuit_dir": circuit_dir,
-                    "previously_used_indices": previously_used_indices,
-                    "deck_root": deck_root,
-                }))
-                .send()
-                .await
-                .map_err(|e| format!("failed to call node {} prepare-reveal: {}", idx, e))?;
-
-            if !resp.status().is_success() {
-                let status = resp.status();
-                let body = resp
-                    .text()
-                    .await
-                    .unwrap_or_else(|_| "unable to read response body".to_string());
-                return Err(format!(
-                    "node {} prepare-reveal rejected request: HTTP {}: {}",
-                    idx, status, body
-                ));
-            }
-
-            let prepared: NodePreparedSharesResponse = resp.json().await.map_err(|e| {
-                format!(
-                    "failed to parse node {} prepare-reveal response: {}",
-                    idx, e
-                )
-            })?;
-
-            Ok::<(usize, String), String>((idx, prepared.share_set_id))
-        });
-        handles.push(handle);
-    }
-
-    collect_prepared_share_sets(handles, node_endpoints.len()).await
+    let phase = phase.to_string();
+    prepare_from_nodes(
+        node_endpoints,
+        move |endpoint, tid| format!("{}/table/{}/prepare-reveal/{}", endpoint, tid, phase),
+        table_id,
+        serde_json::json!({
+            "circuit_dir": circuit_dir,
+            "previously_used_indices": previously_used_indices,
+            "deck_root": deck_root,
+        }),
+        "prepare-reveal",
+    )
+    .await
 }
 
 /// Ask all nodes to prepare showdown share sets.
@@ -159,55 +144,20 @@ pub async fn prepare_showdown_from_nodes(
     hand_commitments: &[String],
     deck_root: &str,
 ) -> Result<PreparedShareSets, String> {
-    let client = reqwest::Client::new();
-    let mut handles = Vec::with_capacity(node_endpoints.len());
-
-    for (idx, endpoint) in node_endpoints.iter().enumerate() {
-        let url = format!("{}/table/{}/prepare-showdown", endpoint, table_id);
-        let circuit_dir = circuit_dir.to_string();
-        let board_indices = board_indices.to_vec();
-        let hand_commitments = hand_commitments.to_vec();
-        let deck_root = deck_root.to_string();
-        let client = client.clone();
-        let handle = tokio::spawn(async move {
-            let resp = client
-                .post(&url)
-                .json(&serde_json::json!({
-                    "circuit_dir": circuit_dir,
-                    "board_indices": board_indices,
-                    "num_active_players": num_active_players,
-                    "hand_commitments": hand_commitments,
-                    "deck_root": deck_root,
-                }))
-                .send()
-                .await
-                .map_err(|e| format!("failed to call node {} prepare-showdown: {}", idx, e))?;
-
-            if !resp.status().is_success() {
-                let status = resp.status();
-                let body = resp
-                    .text()
-                    .await
-                    .unwrap_or_else(|_| "unable to read response body".to_string());
-                return Err(format!(
-                    "node {} prepare-showdown rejected request: HTTP {}: {}",
-                    idx, status, body
-                ));
-            }
-
-            let prepared: NodePreparedSharesResponse = resp.json().await.map_err(|e| {
-                format!(
-                    "failed to parse node {} prepare-showdown response: {}",
-                    idx, e
-                )
-            })?;
-
-            Ok::<(usize, String), String>((idx, prepared.share_set_id))
-        });
-        handles.push(handle);
-    }
-
-    collect_prepared_share_sets(handles, node_endpoints.len()).await
+    prepare_from_nodes(
+        node_endpoints,
+        |endpoint, tid| format!("{}/table/{}/prepare-showdown", endpoint, tid),
+        table_id,
+        serde_json::json!({
+            "circuit_dir": circuit_dir,
+            "board_indices": board_indices,
+            "num_active_players": num_active_players,
+            "hand_commitments": hand_commitments,
+            "deck_root": deck_root,
+        }),
+        "prepare-showdown",
+    )
+    .await
 }
 
 /// Dispatch all prepared share sets and trigger MPC proof generation.
