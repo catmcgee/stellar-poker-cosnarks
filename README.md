@@ -10,6 +10,8 @@ If you are new to MPC or do not fully grasp the limiations of ZK by itself, plea
 
 I've also written a reusable crate that others can use to do card-shuffling in their Soroban app.
 
+![Homepage](assets/homepage.png)
+
 ## How it works
 
 ```
@@ -36,6 +38,8 @@ Multiplayer can be up to 6 players. There is also a Solo mode against an AI (the
 - **ZK-verified**: Deal, reveal, and showdown proofs are UltraHonk proofs verified onchain via Soroban's native BN254 host functions (Protocol 25).
 - **Trustless settlement**: All bets, pot calculation, and payouts happen in Soroban smart contracts. Game logic is handled here!
 - **Honest majority**: As long as there is an honest majority of nodes in TACEO (in our case 2 nodes), privacy will be maintained.
+
+![Gameplay](assets/game.png)
 
 ## Repository Structure
 
@@ -158,3 +162,7 @@ Circuits are written in Noir! They are proved inside TACEO MPC network CoNoir.
 ## Difficulties
 
 This was my first time building on Stellar. It was mostly seamless especially with the help of AI tools, but AI really sucks when it comes to privacy. So I wrote down some issues that I ran into in [DIFFICULTIES.md](/DIFFICULTIES.md).
+
+Pay attention to Easter eggs!
+
+![Gameboy mini-game](assets/gameboy.png)
