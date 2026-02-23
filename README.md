@@ -41,6 +41,17 @@ Multiplayer can be up to 6 players. There is also a Solo mode against an AI (the
 
 ![Gameplay](assets/game.png)
 
+## Contracts on Testnet
+ ┌────────────────────┬──────────────────────────────────────────────────────────┐
+  │      Contract      │                         Address                          │
+  ├────────────────────┼──────────────────────────────────────────────────────────┤
+  │ Poker Table        │ [CB7M3V3POQJR66425J3ILLHS3T4EUBRY67R7AVKSM255WBWOZG7XCYGL](https://stellar.expert/explorer/testnet/contract/CB7M3V3POQJR66425J3ILLHS3T4EUBRY67R7AVKSM255WBWOZG7XCYGL) │
+  ├────────────────────┼──────────────────────────────────────────────────────────┤
+  │ Committee Registry │ [GBTYELEQ2YZH2W6SXLHT4AX6TYBHHU7LNNPKJV7J37VS3S5GPA75KRDU](https://stellar.expert/explorer/testnet/account/GBTYELEQ2YZH2W6SXLHT4AX6TYBHHU7LNNPKJV7J37VS3S5GPA75KRDU) │
+  └────────────────────┴──────────────────────────────────────────────────────────┘
+
+Works alongside Stellar's Game Studio already deployed on testnet at [CB4VZAT2U3UC6XFK3N23SKRF2NDCMP3QHJYMCHHFMZO7MRQO6DQ2EMYG](https://stellar.expert/explorer/testnet/contract/CB4VZAT2U3UC6XFK3N23SKRF2NDCMP3QHJYMCHHFMZO7MRQO6DQ2EMYG).
+
 ## Repository Structure
 
 ```
